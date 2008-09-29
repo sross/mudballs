@@ -1,0 +1,1808 @@
+;;; -*- Mode: LISP; Syntax: COMMON-LISP; Package: CL-USER; Base: 10 -*-
+;;; Copyright (c) 2006-2008, Sean Ross.  All rights reserved.
+;;; Redistribution and use in source and binary forms, with or without
+;;; modification, are permitted provided that the following conditions
+;;; are met:
+;;;   * Redistributions of source code must retain the above copyright
+;;;     notice, this list of conditions and the following disclaimer.
+;;;   * Redistributions in binary form must reproduce the above
+;;;     copyright notice, this list of conditions and the following
+;;;     disclaimer in the documentation and/or other materials
+;;;     provided with the distribution.
+;;; THIS SOFTWARE IS PROVIDED BY THE AUTHOR 'AS IS' AND ANY EXPRESSED
+;;; OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+;;; WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+;;; ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+;;; DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+;;; DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+;;; GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+;;; INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+;;; WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+;;; NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+;;; SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+;;; TODO:
+;; change *systems* to be a hash-table
+
+;;;; Mudballs System Definitions
+;;;
+
+(declaim (optimize debug safety (speed 0)))
+(defpackage :mb.sysdef (:use :cl)
+  (:nicknames :sysdef)
+  (:export
+   ;; special vars
+   #:*info-io* #:*compile-fails-behaviour* #:*compile-warns-behaviour* #:*load-fails-behaviour*
+   #:*fasl-output-root* #:*finders* #:*custom-search-functions*
+   #:*root-pathname* #:*sysdef-path* #:*systems-path*
+
+   ;; types
+   #:system-name #:system-designator
+
+   ;; core protocol
+   #:name-of #:process-options #:process-option #:execute #:perform #:supportedp  #:module-directory
+   #:component-pathname #:input-file #:input-write-date #:fasl-path #:output-file #:output-write-date
+   #:all-files  #:out-of-date-p #:dependency-applicablep
+   #:component-dependencies #:action-dependencies #:dependencies-of #:component-exists-p
+   #:component-output-exists-p  #:applicable-components #:component-applicable-p #:define-system
+   #:find-system #:find-component #:toplevel-component-of
+
+   ;; accessors
+   #:directory-of #:output-pathname-of #:version-of #:keywords-of #:components-of #:all-files #:md5sum-of
+   #:provider-of
+
+   ;; components and actions
+   #:component #:module #:lazy-module #:patchable #:system #:action #:file-action #:source-file-action
+   #:compile-action #:load-action #:load-source-action #:clean-action #:file #:static-file #:source-file
+   #:lisp-source-file
+
+   ;; conditions
+   #:sysdef-condition #:sysdef-error #:sysdef-warning #:no-such-component #:component-not-supported
+   #:component-not-present #:deprecated-system #:fasl-error #:fasl-out-of-date #:fasl-does-not-exist
+   #:compilation-error #:compile-failed #:compile-warned #:duplicate-component
+
+   ;; system definition
+   #:register-sysdefs
+
+   ;; wildcard modules
+   #:wildcard-module #:wildcard-pathname-of
+
+   ;; patches
+   #:load-patches #:create-patch-module #:patch
+
+   ;; preferences
+   #:*load-preferences* #:load-preferences #:create-preference-component
+
+   ;; misc
+   #:run-shell-command #:implementation #:os #:platform #:normalize
+
+   ;; provider related
+   #:with-provider #:url-of #:providerx
+   )
+
+  (:import-from  #.(package-name 
+                    (or (find-package "CLOS")
+                        (find-package "PCL")
+                        (find-package "SB-PCL")
+                        (find-package "MOP")
+                        (find-package "OPENMCL-MOP")
+                        (error "Can't find suitable CLOS package.")))
+   :class-precedence-list))
+
+(in-package :mb.sysdef)
+
+;;; SPECIALS
+(defvar *systems* ()
+  "List containing all the registered systems.")
+
+(defvar *info-io* *debug-io* "Stream where information messages are sent.")
+(defvar *compile-fails-behaviour* #+sbcl :error #-sbcl :warning "One of  nil, :error, :warning")
+(defvar *compile-warns-behaviour* :warning "One of  nil, :error, :warning")
+(defvar *load-fails-behaviour* :compile "One of :error, :compile, :load-source")
+
+(declaim (type pathname *root-pathname*))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defparameter *root-pathname* mudballs.boot::*root-path*)
+
+
+  (defparameter *systems-path*
+    (merge-pathnames (make-pathname :directory '(:relative "systems"))
+                     *root-pathname*)
+    "The root directory for all mudballs systems.")
+
+  (defparameter *sysdef-path*
+    (merge-pathnames (make-pathname :directory '(:relative "system-definitions"))
+                     *root-pathname*))
+  )
+
+(defparameter *saved-slots* '(operation-times)
+  "Slots which are saved on system redefinition.")
+
+(defparameter *inherited-slots* '(if-needs-fails if-supports-fails default-component-class serial)
+  "Slots which get inherited from parent components.")
+
+(defparameter *processed-actions* nil)
+
+(defvar *fasl-output-root* nil "A directory or nil where fasl's are kept, if nil
+then the component source directory is used")
+
+(defvar *builtin-systems* '(:mb.sysdef :sysdef-definitions))
+
+(defparameter *finders* '(default-system-finder))
+
+
+(defparameter *complex-spec-operators* '(and or not))
+(defparameter *boundary-spec-tests* '(> < <= >= = /=))
+
+;; it would be nice if we could use name= for the test here
+(defparameter *loaded-versions* (make-hash-table :test 'equalp))
+
+(defvar *default-development-mode* nil)
+
+(defparameter *custom-search-functions* ())
+
+(defparameter *default-provider* ()
+  "Bound to an instance of provider or NIL. Used as a default initarg for systems. ")
+
+;;; UTILITIES
+ ;; Stolen from ASDF
+(defvar *verbose-out* nil)
+
+(defun run-shell-command (control-string &rest args)
+  "Interpolate ARGS into CONTROL-STRING as if by FORMAT, and
+synchronously execute the result using a Bourne-compatible shell, with
+output to *VERBOSE-OUT*.  Returns the shell's exit code."
+  (declare (string control-string))
+  (let ((command (apply #'format nil control-string args)))
+    (format *verbose-out* "; $ ~A~%" command)
+    #+sbcl
+    (sb-ext:process-exit-code
+     (sb-ext:run-program  
+      #+win32 "sh" #-win32 "/bin/sh"
+      (list  "-c" command)
+      #+win32 #+win32 :search t
+      :input nil :output *verbose-out*))
+    
+    #+(or cmu scl)
+    (ext:process-exit-code
+     (ext:run-program  
+      "/bin/sh"
+      (list  "-c" command)
+      :input nil :output *verbose-out*))
+
+    #+allegro
+    (excl:run-shell-command command :input nil :output *verbose-out*)
+    
+    #+lispworks
+    (system:call-system-showing-output
+     command
+     :shell-type "/bin/sh"
+     :output-stream *verbose-out*)
+    
+    #+clisp				;XXX not exactly *verbose-out*, I know
+    (ext:run-shell-command  command :output :terminal :wait t)
+
+    #+openmcl
+    (nth-value 1
+	       (ccl:external-process-status
+		(ccl:run-program "/bin/sh" (list "-c" command)
+				 :input nil :output *verbose-out*
+				 :wait t)))
+    #+ecl ;; courtesy of Juan Jose Garcia Ripoll
+    (si:system command)
+    #-(or openmcl clisp lispworks allegro scl cmu sbcl ecl)
+    (error "RUN-SHELL-PROGRAM not implemented for this Lisp")
+    ))
+
+(defun without-leading (item list &key (test 'eql))
+  "Returns LIST without any leading ITEM's."
+  (labels ((iter (list acc)
+             (if (funcall test (car list) item)
+                 (iter (cdr list) acc)
+                 (nconc acc list))))
+    (iter list ())))
+
+(defun singlep (thing)
+  (and (consp thing) (not (cdr thing))))
+
+(defmacro when-let ((name test) &body body)
+  `(let ((,name ,test))
+     (when ,name
+       ,@body)))
+
+(defmacro orf (place value &environment env)
+  (multiple-value-bind (vars vals store-vars writer reader)
+      (get-setf-expansion place env)
+    (when (cdr store-vars) (error "Cannot handle multiple values."))
+    (let ((tmp-read (gensym)))
+      `(let* (,@(mapcar 'list vars vals)
+              (,tmp-read ,reader)
+              (,@store-vars (or ,tmp-read ,value)))
+         (or ,tmp-read (progn ,writer ,@store-vars))))))
+
+(defun first-version ()
+  (list 0 0 1))
+
+(defun mklist (x)
+  (if (listp x) x (list x)))
+
+(defmacro revpush (obj place &environment env)
+  "Adds obj to the end of place."
+  (multiple-value-bind (vars vals set-var set get) (get-setf-expansion place env)
+    `(let* (,@(mapcar #'list vars vals)
+            (,@set-var ,get))
+       (setf ,@set-var (nconc ,@set-var (list ,obj)))
+       ,set)))
+
+(defun make-restarter (restart &rest args)
+  "Returns a function of 1 argument, which, when called, will invoke the restart RESTART with args."
+  #'(lambda (c) (apply #'invoke-restart (find-restart restart c) args)))
+
+
+(defun toplevel-component-of (component)
+  "Returns the toplevel system for component."
+  (if (null (parent-of component))
+      component
+      (toplevel-component-of (parent-of component))))
+
+(defun split (string &key max (ws '(#\Space #\Tab)))
+  "Split `string' along whitespace as defined by the sequence `ws'.
+Whitespace which causes a split is elided from the result.  The whole
+string will be split, unless `max' is provided, in which case the
+string will be split into `max' tokens at most, the last one
+containing the whole rest of the given `string', if any."
+  (flet ((is-ws (char) (find char ws)))
+    (nreverse
+     (let ((list nil) (start 0) (words 0) end)
+       (loop
+        (when (and max (>= words (1- max)))
+          (return (cons (subseq string start) list)))
+        (setf end (position-if #'is-ws string :start start))
+        (push (subseq string start end) list)
+        (incf words)
+        (unless end (return list))
+        (setf start (1+ end)))))))
+
+
+(defun safe-write-date (comp)
+  (if (component-output-exists-p comp)
+      (output-write-date comp)
+      0))
+
+(eval-when  (:compile-toplevel :load-toplevel :execute)
+  (defun implementation ()
+    #+lispworks :lispworks #+sbcl :sbcl #+cmu :cmucl #+clisp :clisp
+    #+allegro :allegrocl #+abcl :abcl #+ecl :ecl #+gcl :gcl
+    #+mcl :mcl  #+openmcl :openmcl
+    #-(or lispworks sbcl cmu clisp allegro abcl ecl gcl mcl openmcl)
+    (error "We don't know what this implementation is.
+Please update the implementation function."))
+
+  (defun os ()
+    #+(or :mswindows :windows) :mswindows
+    #+(or :linux (and :clisp :unix)) :linux
+    #+(or :macosx :darwin) :mac)
+
+  (defun platform ()
+    #+(or :x86 :pc386 :i486) :x86
+    #+(or :amd64 :x86-64 :x64) :x86-64
+    #+(or :ppc :powerpc) :ppc
+    #+:hppa :hppa)
+
+  (pushnew (os) *features*)
+  (pushnew (platform) *features*)
+  (pushnew (implementation) *features*)
+  )
+
+
+
+;;; CORE PROTOCOL
+;;;;;;;;;;;;;;;;;
+(defgeneric name-of (object)
+  (:method (object)
+   (error "The required method NAME is not implemented by ~S." object)))
+
+
+
+;;; CORE CLASSES
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; COMPONENT, MODULE & SYSTEM
+;; Our base classes which we create systems with.
+;; I'm extremely fond of asdf's view of a system being
+;; a tree of components.
+(defclass COMPONENT ()
+  ((name :accessor name-of :initarg :name :initform :unspecific)
+   (parent :accessor parent-of :initarg :parent :initform nil)
+   (needs :accessor needs-of :initarg :needs :initform nil)
+   (supports :accessor supports-of :initform nil :initarg :supports)
+   (documentation :initarg :documentation :accessor doc :initform nil)
+   (operation-times :initform (make-hash-table) :accessor operation-times)
+   (version :accessor version-of :initform (first-version) :initarg :version)
+   (patch-version :accessor patch-version-of :initform nil)
+   (if-supports-fails :accessor if-supports-fails :initarg :if-supports-fails :initform :error
+                      :documentation "What action to take if a component is not supported.")
+   (pathname :accessor pathname-of :initarg :pathname :initform nil)
+   (output-pathname :accessor output-pathname-of :initarg :output-pathname :initform nil)))
+
+
+(defclass MODULE (component)
+  ((components :accessor components-of :initform () :initarg :components)
+   (uses-macros-list :accessor uses-macros-from :initarg :uses-macros-from :initform nil)
+   (serial :accessor serialp :initarg :serial :initform t)
+   (directory :accessor directory-of :initarg :directory)
+   (default-component-class :accessor default-component-class-of :initform 'lisp-source-file
+                            :initarg :default-component-class)
+   (default-preference-class :accessor default-preference-class-of :initform 'preference-file
+                             :initarg :default-preference-class)))
+
+(defclass LAZY-MODULE (module) ())
+
+(defclass PATCHABLE ()
+  ((patch-module :accessor patch-module-of :initform ())))
+
+(defclass SYSTEM (module patchable)
+  ((maintainer :accessor maintainer-of :initform nil :initarg :maintainer)
+   (author :accessor author-of :initform "Unknown" :initarg :author)
+   (license :accessor license-of :accessor licence-of :initform "Unknown"
+            :initarg :licence :initarg :license)
+   (development :accessor development-mode :initform *default-development-mode* :initarg :development)
+   (keywords :accessor keywords-of :initarg :keywords :initform ())
+   (deprecated :accessor deprecatedp :initarg :deprecated :initform nil)
+   (contact :accessor contact-of :initform "The Author" :initarg :contact)
+   (preferences :accessor preferences-of :initform nil :initarg :preferences)
+   (preference-component :accessor preference-component-of :initform nil)
+   (provider :reader provider-of :initarg :provider :initform *default-provider*)
+   (md5sum :reader md5sum-of :initarg :md5sum :initform nil)))
+
+(defmethod print-object ((system component) stream)
+  (let ((my-name (name-of system)))
+    (if *print-escape*
+	(print-unreadable-object (system stream :type t :identity t)
+          (if (patch-version-of system)
+              (format stream "~S ~A (patched from ~A)" my-name
+                      (version-string (patch-version-of system))
+                      (version-string (version-of system)))
+              (format stream "~S ~A" my-name
+                      (version-string (version-of system)))))
+        (format stream "~A" my-name))))
+
+(defmethod documentation ((comp component) (type t))
+  (doc comp))
+
+(defmethod documentation ((comp symbol) (type (eql 'system)))
+  (documentation (find-system comp) t))
+
+(defmethod documentation ((comp string) (type (eql 'system)))
+  (documentation (find-system comp) t))
+
+
+
+;;; ACTIONS
+(defclass ACTION ()
+  ((needs :initarg :needs :initform nil :accessor needs-of))
+  (:documentation "The core action class which will be applied to component's using execute."))
+
+(defmethod name-of ((action action))
+  (class-name (class-of action)))
+
+
+(defgeneric coerce-to-action (thing &rest initargs)
+  (:documentation "Converts THING (a class designator) into an action")
+  (:method ((action action) &rest initargs) action )
+  ;; we lookup the make-instance symbol each time here to prevent lispworks
+  ;; from optimizing away the make-instance call and thus losing possible
+  ;; methods on make-instance which causes autloading of action classes to fail.
+  (:method ((action symbol) &rest initargs)
+   (apply (find-symbol "MAKE-INSTANCE") action initargs))
+  (:method (action &rest initargs)
+   (error "Don't know how to coerce ~S into an action." action)))
+
+
+(defclass FILE-ACTION (action) ())
+(defclass SOURCE-FILE-ACTION (file-action) ())
+
+
+;;Basic actions operating on source-files.
+(defclass COMPILE-ACTION (source-file-action) ())
+
+
+(defclass LOAD-ACTION-MIXIN () ())
+
+(defclass LOAD-ACTION (source-file-action load-action-mixin) ()
+  (:default-initargs :needs '(compile-action)))
+
+(defclass LOAD-SOURCE-ACTION (source-file-action load-action-mixin) ())
+
+
+
+(defclass CLEAN-ACTION (source-file-action) ())
+(defclass INSTALL-ACTION (action) ())
+  
+
+;;; COMPONENTS
+
+(defclass FILE (component)
+  ((type :accessor file-type :initarg :type :initform nil)))
+
+
+(defclass STATIC-FILE (file) ())
+(defclass SOURCE-FILE (file) ())
+(defclass LISP-SOURCE-FILE (source-file) () (:default-initargs :type "lisp"))
+
+(defmethod print-object ((file file) stream)
+  (with-slots (name type) file
+    (if *print-escape*
+        (print-unreadable-object (file stream :type t :identity t)
+          (format stream "~A~@[.~A~]" name type))
+        (format stream "~A~@[.~A~]"  name type))))
+
+
+
+;;; CONDITIONS
+(define-condition file-mixin ()
+  ((file :reader file-of :initarg :file)))
+
+(define-condition sysdef-condition (condition) ())
+(define-condition sysdef-error (error sysdef-condition) ())
+(define-condition sysdef-warning (warning sysdef-condition) ())
+
+(define-condition no-such-component (sysdef-error)
+  ((name :reader name-of :initarg :name)
+   (version :reader version-of :initarg :version :initform nil)
+   (parent :reader parent-of :initarg :parent :initform nil))
+  (:report (lambda (c s)
+             (format s "No component named ~S~@[ version ~A~] ~@[ in ~S~]."
+                     (name-of c) (version-of c) (parent-of c)))))
+
+(define-condition component-not-supported (sysdef-error)
+  ((%component :reader component-of :initarg :component))
+  (:report (lambda (c s)
+             (format s "~&Component ~A is not supported.~%The following checks failed~%~
+~{~S~%~}" (component-of c)
+                     (remove-if #'(lambda (x)
+                                    (apply #'check-supported-p x))
+                                (supports-of (component-of c)))))))
+
+(define-condition component-not-present (sysdef-error)
+  ((component :reader component-of :initarg :component))
+  (:report (lambda (c s)
+             (format s "Component ~A does not exist.~%" (input-file (component-of c))))))
+
+(define-condition system-not-intalled (sysdef-error)
+  ((system :reader system-of :initarg :system))
+  (:report (lambda (c s)
+             (format s "System ~A is not installed.~%" (system-of c)))))
+
+(define-condition deprecated-system (warning sysdef-condition)
+  ((system :reader system-of :initarg :system)
+   (by :reader deprecated-by :initarg :by))
+  (:report (lambda (c s)
+             (format s "System ~A is deprecated~@[, Please use ~A instead~]."
+                     (system-of c) (deprecated-by c)))))
+
+(define-condition fasl-error (sysdef-error file-mixin) ())
+
+(define-condition fasl-out-of-date (fasl-error)
+  ()
+  (:report (lambda (c s)
+             (format s "The FASL ~A is out of date." (file-of c)))))
+
+(define-condition fasl-does-not-exist (fasl-error)
+  ()
+  (:report (lambda (c s)
+             (format s "The FASL ~A does not exist." (file-of c)))))
+
+(define-condition compilation-error (sysdef-error file-mixin)
+  ()
+  (:report (lambda (c s)
+             (format s "Compiling ~S failed." (file-of c)))))
+
+(define-condition compile-failed (compilation-error)
+  ()
+  (:report (lambda (c s)
+             (format s "Compilation for file ~A failed." (file-of c)))))
+
+(define-condition compile-warned (compilation-error)
+  ()
+  (:report (lambda (c s)
+             (format s "Compilation for file ~A warned." (file-of c)))))
+
+(define-condition duplicate-component (sysdef-error)
+  ((system :accessor system-of :initarg :system)
+   (name :accessor name-of :initarg :name))
+  (:report (lambda (c s)
+             (format s "Duplicate components named ~S in system ~S." (name-of c) (system-of c)))))
+
+
+;;;; CORE EXECUTION PROTOCOL
+(defgeneric process-options (system options)
+  (:method (system options)
+   (declare (ignore options))
+   (error "The required method PROCESS-OPTIONS is not implemented by ~S." system)))
+
+(defgeneric process-option (component option-key &rest option-data)
+  (:method  (system option-key &rest option-data)
+   (declare (ignore option-data))
+   (error "The required method PROCESS-OPTION is not implemented by ~S for key ~S."
+          system option-key )))
+
+
+(defgeneric execute (system action)
+  (:documentation "The private exection method, this will NOT create a new context when running action.")
+  (:method (system action)
+   (error "The required method EXECUTE is not implemented for ~S and ~S." system action))
+  
+  (:method ((system symbol) action)
+   (execute (find-system system) action))
+  
+  (:method ((system component) action-key)
+   (execute system (coerce-to-action action-key))))
+
+(defgeneric perform (system action &rest initargs &key &allow-other-keys)
+  (:documentation "The public exection method, this WILL create a new context when running action.")
+  (:method (system action &rest initargs &key &allow-other-keys)
+   (declare (ignore initargs))
+   (error "The required method PERFORM is not implemented for ~S and ~S." system action))
+
+  (:method ((system symbol) action &rest initargs &key &allow-other-keys)
+   (apply #'perform (find-system system) action initargs))
+
+  (:method ((system component) action-key &rest initargs &key &allow-other-keys)
+   (perform system (apply 'coerce-to-action action-key initargs)))
+
+  (:method ((system component) (action action) &rest action-data &key &allow-other-keys)
+   (let ((*processed-actions* (acons nil nil nil)))
+     (execute system action))))
+
+
+
+;;; OPTION PROCESSING
+;; Valid options can also be initargs in this scheme.
+(defmethod process-options ((obj component) options)
+  (dolist (data options)
+    (when data
+      (apply #'process-option obj (mklist data))))
+  obj)
+
+
+;; Lispworks doesn't do initialization argument validity checking for
+;; reinitialize-instance so we do it manually here.
+;; This is to stop me from going insane when i wonder why an, unnoticed,
+;; initarg typo has no effect.
+#+lispworks
+(defun valid-initarg-p (object initarg)
+  (find initarg (clos:class-potential-initargs (class-of object))))
+
+(defmethod process-option ((comp component) key &rest data)
+  #+lispworks
+  (assert (valid-initarg-p comp key) (key) "~S is an illegal DEFINE-SYSTEM option." key)
+  (reinitialize-instance comp key (first data)))
+
+
+;; SUPPORTS
+(defgeneric check-supported-p (key &rest options)
+  (:method ((key (eql :implementation)) &rest options)
+   (find (implementation) options))
+  (:method ((key (eql :platform)) &rest options)
+   (find (platform) options))
+  (:method ((key (eql :os)) &rest options)
+   (find (os) options))
+  (:method ((key (eql :feature)) &rest options)
+   (every #'(lambda (feature) (find feature *features*))
+          options))
+  (:method ((key (eql :not)) &rest options)
+   (not (apply #'check-supported-p (first options))))
+  (:method ((key (eql :and)) &rest options)
+   (every #'(lambda (option)
+              (apply #'check-supported-p option))
+          options))
+  (:method ((key (eql :or)) &rest options)
+   (some #'(lambda (option)
+              (apply #'check-supported-p option))
+          options)))
+
+(defgeneric supportedp (component)
+  (:documentation "Returns true if component is supported.")
+  (:method ((component component))
+   "The default method on COMPONENT runs check-supported-p on the entries of the support slot." 
+   (every #'(lambda (supports)
+              (apply #'check-supported-p supports))
+          (supports-of component))))
+
+(defmethod process-option ((comp component) (key (eql :supports)) &rest data)
+  (setf (supports-of comp) data))
+ 
+(defun check-supports (comp action)
+  (declare (ignore action))
+  (if (supportedp comp)
+      t
+      (let ((if-fails (if-supports-fails comp)))
+        (cond ((eql if-fails :error)
+               (restart-case (error 'component-not-supported :component comp)
+                 (continue () :report "Ignore the failure and continue."
+                   t)))
+              ((and if-fails (symbolp if-fails)) (funcall if-fails comp))
+              (t (error "~S is an invalid option for :IF-SUPPORTS-FAILS." if-fails))))))
+
+
+;; NEEDS & REQUIRES OPTION 
+;; Needs definitions are ultimately of the form (match-action component-name [action-to-take])*
+;; and are converted into a list of dependency objects.
+;; Match action is used to determine wether the dependency is applicable, and is done in the
+;; following manner, If match-action is a subclass of the action for the dependency check then
+;; the dependency should be processed against component-name (which is resolved to an actual
+;; component at dependency check time) using either action-to-take or, if it was not supplied,
+;; the action for which the test is happening
+(defclass dependency ()
+  ((match-action :reader match-action-of :initarg :match-action)
+   (component :reader component-of :initarg :component)
+   (consequent-action :reader consequent-action-of :initarg :consequent)))
+
+(defmethod print-object ((dep dependency) stream)
+  (print-unreadable-object (dep stream :type t :identity t)
+    (format stream "on ~S" (component-of dep))))
+
+(defmethod process-option ((comp component) (key (eql :needs)) &rest data)
+  (dolist (one-dep (mapcar #'make-dependency-spec data))
+    (revpush one-dep (needs-of comp))))
+
+;; Dependency specs (while fully specified are (match-action component-name [action-to-take])
+;; match-action can be left out allowing specs of the form (component-name) at which
+;; point we allow the parenthesis to be dropped leaving component-name
+;; when match-action is not specified it is assumed to be ACTION.
+(defun make-dependency-list (spec &aux match comp consequent)
+  (cond ((atom spec) (setf match 'action comp spec))
+        ((versioned-system-name-p spec) (setf match 'action comp spec))
+        ((singlep spec) (setf match 'action comp (first spec)))
+        ((= (length spec) 2) (setf match (first spec)
+                                   comp (second spec)))
+        ((= (length spec) 3) (setf (values match comp consequent)
+                                   (values-list spec)))
+        (t (error "Invalid spec ~S." spec)))
+  (list match comp consequent))
+
+(defun make-dependency-spec (spec)
+  (destructuring-bind (match comp consequent) (make-dependency-list spec)
+    (make-instance 'dependency :match-action match
+                   :component comp :consequent consequent)))
+
+(defun versioned-system-name-p (spec)
+  "Returns true if spec is a list of the form (name :version version-spec)"
+  (and (consp spec)
+       (= (length spec) 3)
+       (eql (second spec) :version)
+       (version-spec-p (third spec))))
+
+
+;; :REQUIRES is specially provided to handle the common case where you want both
+;; (:needs (action DEPENDENCY))
+;; and (:needs #1#=(load-action DEPENDENCY compile-action))
+;; The syntax for :REQUIRES is identical to :NEEDS but it will always add on
+;; the #1 dependency
+(defmethod process-option ((comp component) (key (eql :requires)) &rest data)
+  ;; pass on to needs
+  (apply 'process-option comp :needs data)
+  ;; and add the compiled -> load dependency for each component
+  (dolist (dep data)
+    (let ((dep-comp (second (make-dependency-list dep))))
+      (process-option comp :needs (list 'compile-action dep-comp 'load-action)))))
+
+
+
+;; :COMPONENTS OPTION
+;; All component creation form look something like (name [type] . options)
+;; type defaults to the default-component-class the parent.
+;; options is optional and when the form is only (name) the parenthesis can
+;; be dropped.
+;; 
+;; component-spec -> name || (name [type] . options*)
+;; type -> class-name
+;; options => (option-key . option-data)
+(defun mkspec (spec)
+  "Converts all forms of a component into the full expanded (name [type] options*) form"
+  (flet ((normalize-spec ()
+           (cond ((atom spec) (mkspec (list spec)))
+                 ((not (cdr spec)) (list (first spec) ()))
+                 ((atom (second spec)) (list* (first spec) (list (second spec))
+                                              (cddr spec)))
+                 ((consp (second spec)) (list* (first spec) (list)
+                                               (cdr spec)))
+                 (t spec))))
+    (normalize-spec)))
+
+(defmethod process-option ((system module) (key (eql :components)) &rest args)
+  (setf (components-of system) nil) ; clear out components
+  (dolist (file-spec args)
+    (apply #'process-option system :component (mkspec file-spec))))
+
+(defgeneric add-component-to (component system)
+  (:method ((comp component) (system module))
+   (revpush comp (components-of system))))
+
+(defun ensure-uniqueness (name system)
+  (when (%find-component system name :errorp nil)
+    (error 'duplicate-component :system system :name name)))
+
+(defmethod process-option ((system module) (key (eql :component)) &rest args)
+  (destructuring-bind (name (&optional (type (default-component-class-of system)))
+                            &rest args) args
+    (ensure-uniqueness name system)
+    (let ((comp (create-component system name type args)))
+      (when (serialp system)
+        (when-let (previous-comp (car (last (components-of system))))
+          (process-option comp :requires (name-of previous-comp))))
+      (add-component-to comp system)
+      comp)))
+
+
+;;; These are options which, instead of only using the first value in DATA use
+;;; the entire DATA list.
+(defmacro full-data-option (reader key)
+  `(defmethod process-option ((thing component) (key (eql ,key)) &rest data)
+     (setf (,reader thing) data)))
+
+(full-data-option version-of :version)
+(full-data-option keywords-of :keywords)
+(full-data-option uses-macros-from :uses-macros-from)
+
+;; Development Mode
+(defun current-directory ()
+  (directory-namestring *load-truename*))
+
+(defmethod process-option :after ((system system) (key (eql :development)) &rest data)
+  (when-let (value (first data))
+    (setf (pathname-of system) (current-directory))))
+
+;; This also needs to run after initialize-instance in case *default-development-mode* is bound to true
+(defmethod initialize-instance :after ((system system) &rest initargs &key)
+  (declare (ignore initargs))
+  (when (development-mode system)
+    (setf (pathname-of system) (current-directory))))
+
+
+;;; VERSION PROCESSING AND DEFAULT SYSTEM FINDER
+
+;; VERSION PROCESSING
+(defgeneric version-string (obj)
+  (:documentation "Returns the version or version of obj as a string of the form x.y.z")
+  (:method ((version list))
+   (format nil "~{~D~^.~}" version))
+  (:method ((comp component))
+   (version-string (or (patch-version-of comp) (version-of comp)))))
+
+(defun version-satisfies (spec against-spec)
+  (let ((version (coerce-to-version spec))
+        (against (coerce-to-version against-spec)))
+    (assert (exact-version-spec-p version) (version)
+      "must designate an exact version")    
+    (cond ((exact-version-spec-p against)
+           (version= version against))
+          ((bounding-version-spec-p against)
+           (funcall (version-test (first against)) version (rest against)))
+          ((complex-version-spec-p against)
+           (process-complex-spec version against))
+          (t (error "Invalid version spec ~S." against)))))
+
+(defun create-comparable-version (speca specb &aux (size (max (length speca) (length specb))))
+  (values (map-into  (make-list size :initial-element 0)
+                     #'identity speca)
+          (map-into  (make-list size :initial-element 0)
+                     #'identity specb)))
+
+(defun version-test (test )
+  (let ((sym (intern (format nil "VERSION~S" test) :mb.sysdef)))
+    (if (fboundp sym)
+        (symbol-function sym)
+        (error "No such test ~S."  sym))))
+
+; EXACT AND BOUNDING VERSION TESTS
+(defun version= (test against)
+  (multiple-value-bind (version against)
+      (create-comparable-version test against)
+    (equal version against)))
+
+(defun version> (test against)
+  (multiple-value-bind (test against)
+      (create-comparable-version test against)
+    (loop :for v1-component :in test
+          :for v2-component :in against
+          :when (< v1-component v2-component)
+          :do (return nil)
+          :when (> v1-component v2-component)
+          :do (return t))))
+
+(defun version>= (test against)
+  (or (version> test against)
+      (version= test against)))
+
+(defun version< (test against)
+  (not (version>= test against)))
+
+(defun version<= (test against)
+  (not (version> test against)))
+
+(defun version/= (test against)
+  (not (version= test against)))
+
+
+;; PROCESSING COMPLEX DIRECTIVES
+;; we only handle AND, OR and NOT at present.
+(defun process-complex-spec (version against)
+  (ecase (first against)
+    (and (every (lambda (sub)
+                  (version-satisfies version sub))
+                (rest against)))
+    (or (some (lambda (sub)
+                (version-satisfies version sub))
+              (rest against)))
+    (not (not (version-satisfies version (first (rest against)))))))
+
+;;; COERCE-TO-VERSION
+;; We expect versions to be
+;; a) a list of integers
+;;    eg. (1 2 3) designating the version 1.2.3
+;; b) a list of integers which is preceded by the symbol > or  < or <= or >=
+;;    eg. (> 1 2 3) designating a version greater than 1.2.3
+;;     or (<= 1 2 3) designating a version less than or equal to 1.2.3
+;; c) (a list composed with the symbols AND, OR or NOT in the first position
+;;    with the rest of the list composed of versions eg. (and (not (1 2)) (not 1 3))
+;; d) a string of the form x.y.z which will be converted to (x y z)
+;; e) a wild spec, which has the wildcard, *, as the last component in a version specifiers. eg. (1 *)
+
+(defun coerce-to-version (spec &key (errorp t))
+  (cond ((integerp spec) (list spec))
+        ((wild-spec-p spec) (normalize-spec spec))
+        ((string-version-spec-p spec) (coerce-to-version (split-version-string spec)))
+        ((version-spec-p spec) spec)
+        (t (if errorp
+               (error "Invalid version spec ~S." spec)
+               spec))))
+
+(defun split-version-string (spec)
+  (mapcar (lambda (part)
+            (if (string= part "*")
+                '*
+                (parse-integer part)))
+          (split spec :ws '(#\.))))
+
+(defun exact-version-spec-p (spec)
+  (and (consp spec)
+       (every #'integerp spec)))
+
+(defun bounding-version-spec-p (spec)
+  (and (consp spec)
+       (find (first spec) *boundary-spec-tests*)
+       (exact-version-spec-p (rest spec))))
+
+
+(defun complex-version-spec-p (spec)
+  (and (consp spec) (member (first spec) *complex-spec-operators*)
+       (every 'version-spec-p (rest spec))))
+
+(defun string-version-spec-p (spec)
+  "A string version is an exact version spec in string form. ie. 1.2.3"
+  (and (stringp spec) (every #'(lambda (x) (or (digit-char-p x) (eql x #\.) (eql x #\*))) spec)))
+
+(defun wild-spec-p (spec)
+  (and (consp spec)
+       (cdr spec) ;; length must be > 1
+       (every #'(lambda (x) (or (integerp x) (eql x '*))) spec)
+       (eql (first (last spec)) '*)))
+
+(defun normalize-spec (wild-spec)
+  (let ((spec (butlast wild-spec)))
+    `(and (>= ,@spec)
+          (< ,@(butlast spec) ,(1+ (first (last spec)))))))
+
+(defun version-spec-p (spec)
+  (or (bounding-version-spec-p spec)
+      (complex-version-spec-p spec)
+      (exact-version-spec-p spec)
+      (wild-spec-p spec)))
+
+
+;;;PATHNAMES FOR COMPONENTS & MODULES
+(defgeneric module-directory (module)
+  (:method ((module module))
+   (with-slots (directory name) module
+     (if (slot-boundp module 'directory)
+         (if directory
+             (list :relative (string-downcase (or directory name)))
+             nil)
+         (list :relative (string-downcase name))))))
+
+(defgeneric component-pathname (file)
+  (:method :around ((obj component))
+   (or (pathname-of obj) (call-next-method)))
+  (:method ((sys null)) (merge-pathnames (make-pathname :version :newest)
+                                         *systems-path*))
+  (:method ((system system))
+   (merge-pathnames (make-pathname :directory (list :relative (version-string (version-of system))))
+                    (call-next-method)))
+  (:method ((module module))
+   (merge-pathnames (make-pathname :directory (module-directory module))
+                    (component-pathname (parent-of module))))
+  (:method ((file file)) ;;what about the rest of the components. version etc.
+   (merge-pathnames (make-pathname :type (file-type file) :name (string-downcase (name-of file)))
+                    (component-pathname (parent-of file)))))
+
+(defgeneric input-file (component)
+  (:method ((component file))
+   (component-pathname component)))
+
+(defgeneric input-write-date (component)
+  (:method ((component file))
+   (file-write-date (input-file component))))
+
+
+(defun legalify (string)
+  (let ((sans  (remove-if-not #'alphanumericp string)))
+    (map-into (make-string (min 10 (length sans)) :element-type 'base-char) 'identity sans)))
+
+(defmethod fasl-path (root-system component)
+  (make-pathname :directory (cons :relative
+                                  (mapcar 'string-downcase
+                                          (list ".fasl" (legalify (software-type))
+                                                (legalify (lisp-implementation-type))
+                                                (legalify (lisp-implementation-version)))))))
+
+
+;; While this is remarkably similar to component-pathname we keep them in 2 different methods to
+;; allow for seperate customization on file location and the output of FASL's
+(defgeneric output-file (component)
+  (:method :around ((file file))
+   (or (output-pathname-of file)
+       (compile-file-pathname (merge-pathnames (fasl-path (toplevel-component-of file) file) (call-next-method file)))))
+  (:method ((component component)) nil)
+  (:method ((sys null)) (merge-pathnames (make-pathname :version :newest)
+                                         (or *fasl-output-root* *systems-path*)))
+  (:method ((system system))
+   (merge-pathnames (make-pathname :directory (list :relative (version-string (version-of system))))
+                    (call-next-method)))
+  (:method ((module module))
+   (merge-pathnames (make-pathname :directory (module-directory module))
+                    (output-file (parent-of module))))
+  (:method ((file file)) ;;what about the rest of the components. version etc.
+   (merge-pathnames (make-pathname :type (file-type file)
+                                   :name (string-downcase (name-of file)))
+                    (output-file (parent-of file)))))
+
+
+(defgeneric output-write-date (component)
+  (:method ((component file))
+   (file-write-date (output-file component))))
+
+
+(defgeneric all-files (module &key type)
+  (:documentation "Returns a list of all components of TYPE in the modules subtree")
+  (:method ((module module) &key (type 'file))
+   (loop :for comp :in (components-of module)
+         :when (typep comp type) :collect comp
+         :when (typep comp 'module) :append (all-files comp :type type)))
+  (:method ((comp component) &key (type 'file))
+   (when (typep comp type) (list comp))))
+
+
+
+
+;;; APPLYING ACTIONS TO COMPONENTS
+
+;; Actions Are Only Applicable if they are NOT out of date.
+(defgeneric out-of-date-p (component action)
+  (:documentation "Returns true if applying ACTION to COMPONENT is necessary.")
+  (:method ((component t) (action t))
+   (error "The required method OUT-OF-DATE-P is not implemented for ~S and ~S ." component action))
+  (:method ((component component) (action action))
+   t))
+
+
+; For Load Action
+(defmethod out-of-date-p ((file lisp-source-file) (action load-action))
+  (or (out-of-date-p file (make-instance 'compile-action))
+      (if (and (component-output-exists-p file)
+               (component-exists-p file))
+          (> (output-write-date file)
+             (or (time-of file action) 0))
+          t)))
+
+(defmethod out-of-date-p ((file lisp-source-file) (action load-source-action))
+  (if (time-of file action)
+      (> (input-write-date file) (time-of file action))
+      t))
+
+; Compile Action
+(defgeneric last-compile-time (component)
+  (:method ((system module))
+   (loop :for file :in  (all-files system :type 'source-file)
+         :maximize (last-compile-time file)))
+  (:method ((component component))
+   (safe-write-date component)))
+
+(defgeneric on-macro-use-list (containing-system system)
+  (:documentation "Returns true if SYSTEM is on CONTAINING-SYSTEM's uses-macros-from list.")
+  (:method ((containing-system module) (system module))
+   (find (name-of system) (uses-macros-from containing-system))))
+
+(defun parent-deps-out-of-date-p (action component)
+  "Returns true if any of COMPONENT's toplevel dependencies for ACTION are in the :uses-macros-from list
+and have a last compile time which is greater than the last compile time of COMPONENT"
+  (let* ((my-time (last-compile-time component))
+         (toplevel (toplevel-component-of component)))
+    (loop for (nil . system) in (dependencies-of action toplevel)
+          :thereis (and (on-macro-use-list toplevel system)
+                        (> (last-compile-time system) my-time)))))
+
+
+(defmethod out-of-date-p ((file lisp-source-file) (action compile-action))
+  (if (and (output-file file)
+           (component-output-exists-p file))
+      (or (> (input-write-date file) (output-write-date file))
+          (parent-deps-out-of-date-p action file)
+          (dependencies-out-of-date-p action file))
+      t))
+
+(defun dependencies-out-of-date-p (action file)
+  (loop :with my-time = (last-compile-time file)
+        :for (nil . dep-comp) :in (dependencies-of action file)
+        :thereis (> (last-compile-time dep-comp) my-time)))
+
+(defmethod out-of-date-p ((file lisp-source-file) (action clean-action))
+  (component-output-exists-p file))
+
+;; TIME-OF. 
+(defgeneric time-of (component action)
+  (:documentation "Gives the last(universal-time) that action was applied to component (or nil)")
+  (:method ((component component) (action action))
+   (gethash (class-name (class-of action)) (operation-times component))))
+
+(defgeneric (setf time-of) (value component action)
+  (:method (value (component component) (action action))
+   (setf (gethash (class-name (class-of action)) (operation-times component))
+         value)))
+
+(defmethod time-of ((component file) (action compile-action))
+  (unless (call-next-method)
+    (setf (time-of component action) (safe-write-date component)))
+  (call-next-method))
+
+(defmethod time-of ((mod module) (action compile-action))
+  (reduce #'max (mapcar #'(lambda (file) (time-of file action)) (all-files mod))))
+
+            
+
+;; CALCULATING DEPENDENCIES
+(defgeneric dependency-applicablep (dependency action)
+  (:method ((dependency dependency) (action action))
+   (subtypep (class-of action) (match-action-of dependency)))
+  (:method ((dependency dependency) (action clean-action))
+   ;; clean-action should not descend to dependencies
+   nil))
+
+(defun to-instance (sym-or-object)
+  "If argument is an object then return it otherwise call make-instance with it."
+  (if (typep sym-or-object 'standard-object)
+      sym-or-object
+      (make-instance sym-or-object)))
+
+(defgeneric component-dependencies (component action)
+  (:method ((component component) (action action))
+   (loop :for dep :in (needs-of component)
+         :when (dependency-applicablep dep action)
+         :collect (cons (to-instance (or (consequent-action-of dep) action))
+                        (find-component (parent-of component) (component-of dep)))))
+  ;; we rely on th install action to process the dependcies for us
+  ;; If this method is not present then the :before action on execute
+  ;; for processing dependencies will download the systems in a non
+  ;; obvious order
+  (:method ((component system) (action install-action)) nil))
+
+(defgeneric action-dependencies (action component)
+  (:method ((action action) (component component))
+   (loop for dep-action in (needs-of action)
+         collect (cons (make-instance dep-action) component))))
+
+(defgeneric dependencies-of (action comp)
+  (:method ((action action) (comp component))
+   (append (action-dependencies action comp) (component-dependencies comp action))))
+
+;; The following ensures that we only ever execute a particular (action . component)
+;; combination once in the context of an execute call
+(defun already-processed-p (component action)
+  (cdr (assoc (cons component (class-of action))
+              *processed-actions* :test 'equalp)))
+
+(defun add-processed-action (component action)
+  (acons (cons component (class-of action)) t *processed-actions*))
+
+(defmethod execute :around ((component component) (action action))
+  (labels ((process-action ()
+             (cond ((already-processed-p component action) t)
+                   (t (prog1
+                          (setf *processed-actions*
+                                (add-processed-action component action))
+                          (when (out-of-date-p component action) (call-next-method))))))
+           (process-with-bound-var ()
+             (if *processed-actions*
+                 (process-action)
+                 (let ((*processed-actions* (acons nil nil nil)))
+                   (process-action)))))
+    (loop
+     (restart-case (progn (process-with-bound-var)
+                     (setf (time-of component action) (get-universal-time))
+                     (return component))
+       (retry () :report (lambda (s) (format s "Retry ~A on ~A." (name-of action) component)))
+       (ignore () :report (lambda (s) (format s "Ignore ~A on ~A." (name-of action) component))
+         (return))))))
+
+
+;; AND THE EXECUTE METHODS THEMSELVES
+;;; TODO: From here add :before test on system file-action  to make sure component-is-present
+(defmethod execute :before ((system system) (action file-action))
+  (unless (component-exists-p system)
+    (restart-case (error 'system-not-intalled :system system)
+      (install () :report "Install" (execute system 'install-action)))))
+
+
+(defmethod execute :before ((component component) (action action))
+  (when (check-supports component action)
+    (loop for (dep-action . dep-component) in (dependencies-of action component) :do
+          (execute dep-component dep-action))))
+
+(defgeneric component-exists-p (component)
+  (:method ((component file))
+   (probe-file (input-file component)))
+  (:method ((module module))
+   (every 'component-exists-p (all-files module))))
+   
+
+(defgeneric component-output-exists-p (component)
+  (:method ((component source-file))
+   (probe-file (output-file component))))
+
+(defmethod execute :before ((component source-file) (action source-file-action))
+  (unless (component-exists-p component)
+    (error "Source File ~S does not exist." component)))
+
+(defmethod execute ((module module) (action action))
+  (dolist (comp (applicable-components module action))
+    (execute comp action)))
+
+(defgeneric applicable-components (module action)
+  (:method ((module module) (action action))
+   (remove-if-not #'(lambda (comp) (component-applicable-p comp action))
+                  (components-of module))))
+
+(defgeneric component-applicable-p (component action)
+  (:method ((modules module) (action action))
+   t)
+  (:method ((component component) (action action))
+   t)
+  (:method ((component component) (action source-file-action))
+   nil)
+  (:method ((component source-file) (action source-file-action))
+   t)
+  (:method ((modue lazy-module) (action action))
+   nil))
+
+;; Our install action
+;; We do some special stuff here for to tie the install action in such that
+;; a) we don't have to load the dependencies required to install until the last moment
+;; b) we can provide an `install` restart when the system is not installed.
+(defmethod execute ((system system) (action install-action))
+  (execute 'installer 'load-action)
+  (funcall (find-symbol "INSTALL" (find-package :installer))
+           system))
+
+;;; LOAD ACTIONS
+(defmethod execute :before ((system system) (action load-action-mixin))
+  (when (deprecatedp system)
+    (warn 'deprecated-system :system system :by (unless (eql (deprecatedp system) t)
+                                                  (deprecatedp system)))))
+
+;; Load Source Action
+(defmethod execute ((component lisp-source-file) (action load-source-action) )
+  (load (input-file component)))
+
+
+; Load Action
+(defgeneric ensure-output-path-exists (file)
+  (:method ((file lisp-source-file))
+   (ensure-directories-exist (output-file file))))
+
+(defmethod execute :before ((comp lisp-source-file) (action source-file-action))
+  (ensure-output-path-exists comp))
+
+(defmethod execute :around ((file lisp-source-file) (action load-action))
+  (handler-bind ((fasl-error (ecase *load-fails-behaviour*
+                               (:error (constantly nil))
+                               (:compile (make-restarter 'compile-system))
+                               (:load-source (make-restarter 'load-source)))))
+    (handler-case (call-next-method)
+      ;; invalid FASL recompilation
+      (#+sbcl sb-ext:invalid-fasl #+allegro excl::file-incompatible-fasl-error
+        #+lispworks conditions:fasl-error #+cmu ext:invalid-fasl
+        #-(or sbcl allegro lispworks cmu) error ()
+        (execute file 'clean-action)
+        (execute file 'compile-action)
+        (call-next-method)))))
+
+(defmethod execute ((component lisp-source-file) (action load-action))
+  (flet ((do-load ()
+           (cond ((not (component-output-exists-p component))
+                  (error 'fasl-does-not-exist :file (output-file component)))
+                 ((> (input-write-date component) (output-write-date component))
+                  (error 'fasl-out-of-date :file (output-file component)))
+                 (t (load (output-file component))))))
+    (restart-case (do-load)
+      (compile-system ()
+        :report "Compile the component and retry."
+        ;; for some reason using :test fails in CLISP 2.41 and CMUCL (19d)
+        ;:test (lambda (c) (typep c 'fasl-error)) 
+        (execute (parent-of component) 'compile-action)
+        ;; the act of compiling the parent can complete the action for us.
+        (unless (out-of-date-p component action)
+          (execute component action)))
+      (load-source ()
+        :report "Load source file instead of fasl."
+        ;:test (lambda (c) (typep c 'fasl-error))
+        ;; TODO: shouldn't this be (execute comp (make-instance 'load-source-action))
+        (load (input-file component)))))
+  component)
+
+; Compile Action
+(defmethod execute :around ((sys system) (action compile-action))
+  (with-compilation-unit ()
+    (call-next-method)))
+
+(defgeneric ensure-file (component)
+  (:method ((component component))
+   (unless (component-exists-p component)
+     (error 'component-not-present :component component))))
+
+(defmethod execute ((component lisp-source-file) (action compile-action))
+  (ensure-file component)
+  (multiple-value-bind (output-file warnings-p failure-p)
+      (compile-file (input-file component)
+                    :output-file (output-file component)
+                    #+lispworks :external-format #+lispworks :utf-8)
+    (when warnings-p
+      (case *compile-warns-behaviour*
+        (:warning (warn "COMPILE-FILE warned while compiling ~S." component))
+        (:error (error 'compile-warned :file component))
+        (t nil)))
+    (when failure-p
+      (case *compile-fails-behaviour*
+        (:warning (warn "COMPILE-FILE warned while compiling ~S." component))
+        (:error (error 'compile-failed :file component))
+        (t nil)))
+    (unless output-file (error 'compilation-error :file (input-file component))))
+  component)
+
+; Clean Action
+(defmethod execute ((component file) (action clean-action))
+  (when-let (output-file (component-output-exists-p component))
+    (format *info-io* "~&DELETE ~A~%" output-file)
+    (delete-file output-file)))
+
+
+;;; SYSTEM CREATION AND LOCATION
+(defmacro define-system (name (&optional (class 'system)) &body options)
+  (if (multiple-version-definitions-p options)
+      `(progn
+         ,@(expand-multiple-versions name class options))
+      `(fn-define-system ',name ',class nil ',options)))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  ;; We need these function present at compile time
+
+(defun multiple-version-definitions-p (options)
+  (get-from-options options :versions))
+
+(defun expand-multiple-versions (name class options)
+  (let ((without-versions (remove :versions options :key 'car)))
+    (assert (get-from-options options :versions)
+        (options) "Options does not contain an :versions form.")
+    (mapcar #'(lambda (version)
+                `(define-system ,name (,class)
+                   (:version ,@version)
+                   ,@without-versions))
+            (get-from-options options :versions))))
+
+(defun get-from-options (options key &optional default)
+  (or (loop for (keyword . value) in options
+            thereis (and (eql key keyword) value))
+      default))
+
+) ;;eval-when
+
+(deftype system-name ()
+  "The type which is a valid system name to define-system"
+  '(or symbol cons))
+
+(deftype subsystem-definition ()
+  'cons)
+
+(defun fn-define-system (name class parent options)
+  (check-type name system-name)
+  (if (subsystem-definition-p name)
+      (let ((class (if (eql class 'system) 'module class))
+            (parent (find-system-for name
+                                     (get-from-options options :version (first-version))))
+            (name (first (last name))))
+        (add-component-to (create-component parent name class options) parent))
+      (register-system (create-component parent name class options))))
+
+
+
+(defun subsystem-definition-p (name)
+  (typep name 'subsystem-definition))
+
+
+
+(defun find-system-for (name-list version)
+  "Takes a list of (system-name modules* new-module) and finds the appropriate
+module to be the parent of new-module with version VERSION."
+  (let* ((system (find-system (first name-list) :version version))
+         (parent (apply #'find-component system (butlast (rest name-list)))))
+    (check-type parent module)
+    parent))
+
+(defun system-key ()
+  #'(lambda (sys) (list (name-of sys) (version-of sys))))
+
+(defun register-system (system)
+  (setf *systems* (delete (funcall (system-key) system) *systems* :test #'equalp :key (system-key)))
+  (pushnew system *systems* :test #'equalp :key (system-key))
+  system)
+
+
+;; Unlike ASDF we do not reuse our objects when redefining systems.
+;; Explanation.....
+;; When redefining a system it is important to ensure that slots 
+;; are set back to their default values when a system is reinitialized,
+;; this created portability nightmares when trying to
+;; ensure that each slot was set to its appropriate value (or made unbound).
+;; We can almost do this with (change-class (change-class 'class-with-no-slots) 'system)
+;; but this loses when you have :default-initargs.
+
+;; This creates a second issue. If we do not reuse our system objects we will consider a system to be
+;; unoperated upon when a system is redefined.
+;; So in order to prevent system redefinition from causing sysdef to consider a system 'unoperated'
+;; upon we copy the operation-times from old instance to new.
+(defgeneric create-component (parent name class &optional options)
+  (:method (parent name class &optional options)
+   (let ((current (%find-component parent name :errorp nil))
+         (component (make-instance class :parent parent)))
+     (when current
+       (copy-slots current component *saved-slots*))
+     (when parent
+       (copy-slots parent component *inherited-slots*))
+     (process-option component :name name)
+     (process-options component options)
+     component)))
+
+
+;; This is only to be used by copy-slots and is not to be extended.
+(defgeneric %copy-object (object)
+  (:method ((obj t)) (error "Cannot inherit ~S." obj))
+  (:method ((num number)) num)
+  (:method ((sym symbol)) sym)
+  (:method ((char character)) char)
+  (:method ((sequence sequence)) (copy-seq sequence))
+  ;; We also do hash-tables to allow us to propogate operation-times
+  (:method ((hash hash-table))
+   (let ((ret (make-hash-table :size (hash-table-size hash)
+                               :test (hash-table-test hash)
+                               :rehash-size (hash-table-rehash-size hash)
+                               :rehash-threshold (hash-table-rehash-threshold hash))))
+     (maphash #'(lambda (key value) (setf (gethash key ret) value)) hash)
+     ret)))
+
+;; TODO: Check why we are copying objects here and is it really necessary?
+(defun copy-slots  (from to slot-names &key (copy t))
+  (dolist (name slot-names)
+    (when (and (slot-exists-p from name)
+               (slot-exists-p to name))
+      (if (slot-boundp from name)
+          (setf (slot-value to name)
+                (funcall (if copy #'%copy-object #'identity)
+                         (slot-value from name)))
+          (slot-makunbound to name)))))
+
+;; Locating components
+(defgeneric find-system (name &rest args &key errorp &allow-other-keys)
+  (:method ((system system) &rest args &key errorp)
+   (declare (ignore args errorp))
+   system)
+  (:method (name &rest args &key (errorp t) &allow-other-keys)
+   (let ((sys (loop :for finder :in *finders*
+                    :thereis (apply finder name :allow-other-keys t args))))
+     (cond (sys sys)
+           (errorp (error 'no-such-component :name name))
+           (t nil)))))
+
+(defun find-component (&rest args)
+  (labels ((to-component (parent thing)
+             (if (and (null parent) (typep thing 'component))
+                 thing
+                 (apply '%find-component parent (mklist thing))))
+           (one-loop (parent rest)
+             (if (endp rest)
+                 parent
+                 (one-loop (to-component parent (car rest))
+                           (cdr rest)))))
+    (one-loop nil (without-leading nil args))))
+
+
+(defgeneric %find-component (parent name &key errorp version)
+  (:method ((parent (eql nil)) name &key (errorp t) version)
+   (find-system name :errorp errorp :version version))
+  (:method ((parent module) name &key (errorp t) version) ;; Version is unused here
+   ;; we use slot-value instead of components-of to allow
+   (declare (ignore version))
+   (or (find name (slot-value parent 'components) :key #'name-of :test #'equalp)
+       (when errorp (error  'no-such-component :name name :parent parent)))))
+
+(deftype system-designator ()
+  "The type system-designator denotes the set of lisp objects which can be used to lookup a system."
+  `(or string symbol))
+
+;; This could do with a better name
+(defun normalize (name)
+  (check-type name system-designator)
+  (string name))
+
+(defun name= (a b)
+  (equalp (normalize a) (normalize b)))
+
+(defun available-systems (name)
+  (remove name *systems* :key 'name-of :test-not 'name=))
+
+(defun systems-for (name &key (version '(>= 0)))
+  (sort (remove-if-not (lambda (sys)
+                         (version-satisfies (version-of sys) version))
+                       (available-systems name))
+        'version>
+        :key 'version-of))
+
+;; name => system mapping for loaded systems
+
+(defgeneric system-loaded-p (system-designator)
+  (:documentation "Returns the current version of the system designated by SYSTEM-DESIGNATOR that
+has been loaded into the the current Lisp image or nil.")
+  (:method ((sys system))
+   (system-loaded-p (name-of sys)))
+  (:method ((name t))
+   (gethash (normalize name) *loaded-versions*)))
+
+(defgeneric (setf system-loaded-p) (newval designator)
+  (:method ((sys system) designator) 
+   (setf (gethash (normalize designator) *loaded-versions*)
+         (version-of sys)))
+  (:method ((name null) designator)
+   (remhash (normalize designator) *loaded-versions*)))
+
+(defmethod execute :after ((system system) (action load-action))
+  (setf (system-loaded-p (name-of system)) system)
+  (ensure-dependencies-up-to-date system)
+  (load-patches system)
+  (load-preferences system))
+
+(defgeneric ensure-dependencies-up-to-date (system)
+  (:method ((system system))
+   (dolist (sys *systems*)
+     (when (on-macro-use-list sys system)
+       (execute sys 'load-action)))))
+
+(defmethod execute :before ((system system) (action source-file-action))
+  (let ((loaded-version (system-loaded-p (name-of system))))
+    (when (and loaded-version (not (version= (version-of system) loaded-version)))
+      (cerror "Load system anyway." "Attempting to perform an action upon version ~A of ~A ~
+but version ~A is already loaded." (version-string system) (name-of system)
+              (version-string loaded-version)))))
+
+(defun default-system-finder (name &rest args &key (errorp t) (version '(>= 0) version-supp-p)
+                                   &allow-other-keys)
+  (declare (ignore args))
+  (unless version (setf version '(>= 0)))
+  (let ((possible-systems (systems-for name :version version))
+        (loaded-version (system-loaded-p name)))
+    ;;    nothing loaded so try and load the first system we can get
+    ;;    (systems-for returns systems sorted by version>)
+    (labels ((system-with-version (version)
+               (or (find version possible-systems :test 'version= :key 'version-of)
+                   (no-component version)))
+             (no-component (&optional version)
+               (error 'no-such-component :name name :version (when version-supp-p version))))
+      (cond ((not loaded-version)
+             (or (first possible-systems) 
+                 (when errorp (error 'no-such-component :name name
+                                     :version (if version-supp-p version)))))
+          
+            ;; system is loaded but version is not specified so keep our current version
+            ((and loaded-version (not version-supp-p)) (system-with-version loaded-version))
+
+            ;; system is loaded and we satisfy the requested version
+            ((and loaded-version version-supp-p (version-satisfies loaded-version version))
+             (system-with-version loaded-version))
+
+            ;; At this point our currently loaded system does not satisfy version
+            ;; so if we have dont have a suitable system we signal an error (when appropriate)
+            ((not possible-systems) 
+             (error 'no-such-component :name name :version (when version-supp-p version)))
+          
+            ;; return the highest versioned system which satisfies version.
+            ;; this will be checked against the currently loaded version in an execute :before method
+            (t (first possible-systems))))))
+
+;;; WILDCARD MODULES
+;;; Modules which load all files in their directory.
+;;; This is done by doing a wildcard directory search in the directory
+;;; and adding components for all files found matching the modules suffix
+(defmethod name-of ((thing pathname))
+  (pathname-name thing))
+
+(defclass wildcard-module (module)
+  ((suffix :accessor suffix-of :initarg :suffix :initform "lisp")
+   (ordered :accessor ordered-of :initarg :ordered :initform nil)
+   (cached-components :accessor cached-components-of :initform nil)))
+
+(defvar *special-directory-keywords* '(:wild :wild-inferiors :back :up))
+
+
+(defmethod component-pathname ((module wildcard-module))
+  (let ((next (call-next-method)))
+    (if (and (slot-boundp module 'directory) (member (directory-of module) *special-directory-keywords*))
+        (merge-pathnames (make-pathname :directory (butlast (pathname-directory next)))
+                         next)
+        next)))
+
+(defmethod output-file ((module wildcard-module))
+  (let ((next (call-next-method)))
+    (if (and (slot-boundp module 'directory) (member (directory-of module) *special-directory-keywords*))
+        (merge-pathnames (make-pathname :directory (butlast (pathname-directory next)))
+                         next)
+        next)))
+
+
+(defgeneric wildcard-pathname-of (module)
+  (:method ((module module))
+   (merge-pathnames (make-pathname :directory
+                                   (when (and (slot-boundp module 'directory) (member (directory-of module) *special-directory-keywords*))
+                                     (list :relative (directory-of module)))
+                     :name :wild :type (suffix-of module))
+                    (component-pathname module))))
+
+(defun mismatchedp (filelist component-list)
+  (or (set-difference filelist component-list :key 'name-of :test 'equalp)
+      (set-difference component-list filelist :key 'name-of :test 'equalp)))
+
+(defgeneric create-wildcard-components (module file-list)
+  (:method ((module module) file-list)
+   (loop :for file :in file-list
+         :collect (create-component module (name-of file)
+                                    (default-component-class-of module)
+                                    `((:pathname ,file))))))
+
+(defgeneric merge-differences (module on-disk-files cached-components)
+  (:method  ((module module) on-disk-files cached-components)
+   (flet ((to-keep ()
+            (loop for cached in cached-components
+                  if (find (name-of cached) on-disk-files :key 'name-of :test 'equalp)
+                  collect cached)))
+     (let ((new-files (set-difference on-disk-files cached-components :key 'name-of :test 'equalp)))
+       (append (to-keep)
+               (create-wildcard-components module new-files))))))
+
+(defmethod components-of ((module wildcard-module))
+  (let* ((on-disk-files (directory (wildcard-pathname-of module))))
+    (setf (cached-components-of module)
+          (if (mismatchedp on-disk-files (cached-components-of module))
+              (merge-differences module on-disk-files (cached-components-of module))
+              (cached-components-of module)))))
+
+(defmethod components-of :around ((module wildcard-module))
+  (let ((values (call-next-method)))
+    (if (ordered-of module)
+        (sort (copy-list values) (ordered-of module) :key 'name-of)
+        values)))
+
+
+;;; LOADING OF SYSTEM DEFINITION FILES
+;;; sydef files are expected to execute define-system forms and are treated as a system
+;;; whose components are computed.
+
+(defclass wildcard-sysdef-searcher (wildcard-module)
+  ((search-directory :accessor search-directory-of :initarg :search-directory)
+   (development-mode :accessor development-mode-of :initarg :development-mode :initform nil))
+  (:default-initargs :default-component-class 'sysdef-file))
+
+
+(defmethod wildcard-pathname-of ((module wildcard-sysdef-searcher))
+  (search-directory-of module))
+
+(defmethod create-wildcard-components ((module wildcard-sysdef-searcher) file-list)
+  (loop :for file :in file-list
+        :collect (create-component module (name-of file)
+                                   (default-component-class-of module)
+                                   `((:pathname ,file)
+                                     (:development-systems ,(development-mode-of module))
+                                     (:output-pathname ,(compile-file-pathname file))))))
+
+(defun wildcard-searcher (path &key development-mode)
+  (make-instance 'wildcard-sysdef-searcher :search-directory path :development-mode development-mode))
+
+(defclass sysdef-file (lisp-source-file)
+  ((development-systems-p :initarg :development-systems :initform nil :accessor development-systems-p
+                          :documentation "Controls whether systems defined by this sydesf file will be created in development mode")))
+
+(defmethod execute ((file sysdef-file) (action load-action))
+  (let ((*default-development-mode* (development-systems-p file)))
+    (call-next-method)))
+
+
+
+(define-system :SYSDEF-DEFINITIONS ()
+  (:pathname #.*sysdef-path*)
+  (:default-component-class sysdef-file)
+  (:components  ("files" wildcard-module (:directory :wild-inferiors))))
+
+(defmethod components-of ((sys (eql (find-system :sysdef-definitions))))
+  (append (call-next-method) *custom-search-functions*))
+
+(defun register-sysdefs ()
+  "Loads all system definition files that have been registered.
+ie. All that are part of the standard mudballs distribution or custom files
+loaded by functions on *custom-search-functions*."
+  (declare (values))
+  (perform :sysdef-definitions 'load-action))
+
+;; and force system update on any action
+(defmethod perform :before ((sys system) (action action) &rest plan-data)
+  (declare (ignorable plan-data))
+  (unless (member (name-of sys) *builtin-systems*)
+    (register-sysdefs)))
+
+
+
+;;;;;;;
+;;; PATCH SYSTEM
+(defvar *system-being-patched* nil)
+
+(defgeneric load-patches (system)
+  (:method ((system system))
+   (let ((module (or (patch-module-of system)
+                     (setf (patch-module-of system)
+                           (create-patch-module system))))
+         (*system-being-patched* system))
+     (execute module 'load-action))))
+
+(defun patch-name (system)
+  (intern (format nil "~A-PATCH-SYSTEM" system) :keyword))
+
+(defgeneric create-patch-module (system)
+  (:method ((system system))
+   (create-component system (patch-name system) 'patch-module)))
+
+(defun integer-string< (a b)
+  (< (parse-integer a :junk-allowed t)
+     (parse-integer b :junk-allowed t)))
+
+(defclass patch-module (wildcard-module)
+  ()
+  (:default-initargs :ordered 'integer-string<))
+
+(defmethod component-pathname ((module patch-module))
+  (merge-pathnames (make-pathname :directory (list :relative "patches" (string-downcase (name-of (parent-of module)))
+                                                   (version-string (version-of (parent-of module)))))
+                   *root-pathname*))
+
+(defmethod output-file ((module patch-module))
+  (merge-pathnames (fasl-path (toplevel-component-of module) module) (component-pathname module)))
+
+(defmacro patch (version &key)
+  `(setf (patch-version-of *system-being-patched*)
+         ',version))
+
+;;; BOOTSTRAP
+;; And now we create ourself as a system
+(define-system :mb.sysdef ()
+  (:author "Sean Ross")
+  (:supports (:implementation :lispworks :sbcl :cmucl :clisp :allegrocl :abcl :ecl :openmcl))
+  (:contact "sross@common-lisp.net")
+  (:version 1)
+  (:preferences #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
+  (:components "mb"))
+
+;; and register ourselves as loaded
+(let ((first-file (find-component :mb.sysdef "mb")))
+  (setf (time-of first-file (make-instance 'load-action))
+        (get-universal-time)))
+
+
+(defpackage :sysdef-user (:use :cl :mb.sysdef))
+
+
+;; Loading Users config file.
+(defclass preference-file (lisp-source-file) ())
+(defmethod print-object ((obj preference-file) stream)
+  (if *print-escape*
+      (print-unreadable-object (obj stream :type t :identity t)
+        (princ (pathname-of obj) stream))
+      (princ (pathname-of obj) stream)))
+
+(defvar *load-preferences* t)
+
+(defun preference-file-exists-p (sys)
+  (and (preferences-of sys) (probe-file (preferences-of sys))))
+
+(defgeneric load-preferences (system)
+  (:method :around ((sys system))
+   (when (and *load-preferences* (preference-file-exists-p sys))
+     (call-next-method)))
+  (:method ((sys system))
+   (let ((component (orf (preference-component-of sys)
+                         (create-preference-component sys))))
+     (execute component 'load-source-action))))
+
+(defgeneric create-preference-component (system)
+  (:method ((system system))
+   (let ((path (preferences-of system)))
+     (create-component system "preference-file"
+                       (default-preference-class-of system)
+                       `((:pathname ,path))))))
+
+
+;;; System Providers and Definition Files
+(defvar *extracting-url* nil)
+(defun definition-file-provider-url (file)
+  (catch 'url
+    (let ((*extracting-url* t))
+      (load file))))
+
+
+(defun initial-providers ()
+  (make-hash-table :test #'equalp))
+
+(defvar *registered-providers* (initial-providers))
+
+(defun definition-file-provider (file)
+  (gethash (definition-file-provider-url file)
+           *registered-providers*))
+
+    
+
+
+(defclass provider ()
+  ((url :initarg :url :reader url-of :initform nil)
+   (contact :initarg :contact :reader contact-of :initform nil)))
+
+(defun register-provider (url &key contact)
+  (orf (gethash url *registered-providers*)
+       (make-instance 'provider :url url :contact contact)))
+
+(defmacro with-provider ((&key url contact) &body body)
+  `(if *extracting-url*
+       (throw 'url ,url)
+       (let ((*default-provider* (register-provider ,url :contact ,contact)))
+         ,@body)))
+
+
+
+;;;; Extra operations.
+;;; Here we predefine various files and system types which can be used to
+;;; compose systems. We only provide the classes here and expect another system
+;;; to define useful methods on them this is to keep startup times to a minimum
+;;; (eg. sysdef-grovel requires an extra 3 systems and it isn't reasonable to
+;;;   have them all loaded in order to define a system, which we do at startup)
+
+
+
+(defclass grovel-file (lisp-file)
+  ()
+  (:default-initargs :type "cffi.lisp"))
+
+
+;; EOF
