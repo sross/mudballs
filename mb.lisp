@@ -101,7 +101,7 @@
          ((member nil :error) *compile-warns-behaviour*)
          ((member :error :compile :load-source) *load-fails-behaviour*)
          (pathname *root-pathname* *systems-path* *sysdef-path*)
-         ((or nil pathname) *fasl-output-root*)
+         ((or null pathname) *fasl-output-root*)
          (list *finders* *custom-search-modules*))
 
 (defvar *info-io* *debug-io* "*info-io* intended to be bound to an output stream where information messages will be sent.
