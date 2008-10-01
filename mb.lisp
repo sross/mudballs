@@ -32,6 +32,8 @@
 (defpackage :mb.sysdef (:use :cl)
   (:nicknames :sysdef)
   (:export
+
+   ;; Uppercase symbols still need to be documented.
    ;; special vars
    #:*info-io* #:*compile-fails-behaviour* #:*compile-warns-behaviour* #:*load-fails-behaviour*
    #:*fasl-output-root* #:*finders* #:*custom-search-modules*
@@ -41,44 +43,44 @@
    #:system-name #:system-designator
 
    ;; core protocol
-   #:name-of #:process-options #:process-option #:execute #:perform #:supportedp  #:module-directory
-   #:component-pathname #:input-file #:input-write-date #:fasl-path #:output-file #:output-write-date
-   #:all-files  #:out-of-date-p #:dependency-applicablep
-   #:component-dependencies #:action-dependencies #:dependencies-of #:component-exists-p
-   #:component-output-exists-p  #:applicable-components #:component-applicable-p #:define-system
-   #:find-system #:find-component #:toplevel-component-of
+   #:NAME-OF #:process-options #:PROCESS-OPTION #:EXECUTE #:PERFORM #:SUPPORTEDP  #:MODULE-DIRECTORY
+   #:COMPONENT-PATHNAME #:INPUT-FILE #:INPUT-WRITE-DATE #:FASL-PATH #:OUTPUT-FILE #:OUTPUT-WRITE-DATE
+   #:ALL-FILES  #:OUT-OF-DATE-P #:DEPENDENCY-APPLICABLEP
+   #:COMPONENT-DEPENDENCIES #:ACTION-DEPENDENCIES #:DEPENDENCIES-OF #:COMPONENT-EXISTS-P
+   #:COMPONENT-OUTPUT-EXISTS-P  #:APPLICABLE-COMPONENTS #:COMPONENT-APPLICABLE-P #:DEFINE-SYSTEM
+   #:FIND-SYSTEM #:FIND-COMPONENT #:TOPLEVEL-COMPONENT-OF
 
-   ;; accessors
-   #:directory-of #:output-pathname-of #:version-of #:keywords-of #:components-of #:all-files #:md5sum-of
-   #:provider-of
+   ;; ACCESSORS
+   #:DIRECTORY-OF #:OUTPUT-PATHNAME-OF #:VERSION-OF #:KEYWORDS-OF #:COMPONENTS-OF #:ALL-FILES #:MD5SUM-OF
+   #:PROVIDER-OF
 
-   ;; components and actions
-   #:component #:module #:lazy-module #:patchable #:system #:action #:file-action #:source-file-action
-   #:compile-action #:load-action #:load-source-action #:clean-action #:file #:static-file #:source-file
-   #:lisp-source-file
+   ;; COMPONENTS AND ACTIONS
+   #:COMPONENT #:MODULE #:LAZY-MODULE #:PATCHABLE #:SYSTEM #:ACTION #:FILE-ACTION #:SOURCE-FILE-ACTION
+   #:COMPILE-ACTION #:LOAD-ACTION #:LOAD-SOURCE-ACTION #:CLEAN-ACTION #:FILE #:STATIC-FILE #:SOURCE-FILE
+   #:LISP-SOURCE-FILE
 
-   ;; conditions
-   #:sysdef-condition #:sysdef-error #:sysdef-warning #:no-such-component #:component-not-supported
-   #:component-not-present #:deprecated-system #:fasl-error #:fasl-out-of-date #:fasl-does-not-exist
-   #:compilation-error #:compile-failed #:compile-warned #:duplicate-component
+   ;; CONDITIONS
+   #:SYSDEF-CONDITION #:SYSDEF-ERROR #:SYSDEF-WARNING #:NO-SUCH-COMPONENT #:COMPONENT-NOT-SUPPORTED
+   #:COMPONENT-NOT-PRESENT #:DEPRECATED-SYSTEM #:FASL-ERROR #:FASL-OUT-OF-DATE #:FASL-DOES-NOT-EXIST
+   #:COMPILATION-ERROR #:COMPILE-FAILED #:COMPILE-WARNED #:DUPLICATE-COMPONENT
 
-   ;; system definition
-   #:register-sysdefs
+   ;; SYSTEM DEFINITION
+   #:REGISTER-SYSDEFS
 
-   ;; wildcard modules
-   #:wildcard-module #:wildcard-pathname-of #:wildcard-searcher
+   ;; WILDCARD MODULES
+   #:WILDCARD-MODULE #:WILDCARD-PATHNAME-OF #:WILDCARD-SEARCHER
 
-   ;; patches
-   #:load-patches #:create-patch-module #:patch
+   ;; PATCHES
+   #:LOAD-PATCHES #:CREATE-PATCH-MODULE #:PATCH
 
-   ;; preferences
-   #:*load-preferences* #:load-preferences #:create-preference-component
+   ;; PREFERENCES
+   #:*LOAD-PREFERENCES* #:LOAD-PREFERENCES #:CREATE-PREFERENCE-COMPONENT
 
-   ;; misc
-   #:run-shell-command #:implementation #:os #:platform #:normalize
+   ;; MISC
+   #:RUN-SHELL-COMMAND #:IMPLEMENTATION #:OS #:PLATFORM #:NORMALIZE
 
-   ;; provider related
-   #:with-provider #:url-of #:provider
+   ;; PROVIDER RELATED
+   #:WITH-PROVIDER #:URL-OF #:PROVIDER
    )
 
   (:import-from  #.(package-name 
@@ -553,10 +555,13 @@ Please update the implementation function."))
 
 
 ;;;; CORE EXECUTION PROTOCOL
-(defgeneric process-options (system options)
-  (:method (system options)
+(defgeneric process-options (component options)
+  (:method (component options)
    (declare (ignore options))
-   (error "The required method PROCESS-OPTIONS is not implemented by ~S." system)))
+   (error "The required method PROCESS-OPTIONS is not implemented by ~S." component))
+  (:documentation "Takes a list options, each option being a list of the form (<i>option-name</i> values) and processes
+them against component."))
+
 
 (defgeneric process-option (component option-key &rest option-data)
   (:method  (system option-key &rest option-data)
@@ -597,6 +602,7 @@ Please update the implementation function."))
 ;;; OPTION PROCESSING
 ;; Valid options can also be initargs in this scheme.
 (defmethod process-options ((obj component) options)
+  "The default method on COMPONENT is to run PROCESS-OPTION on each option."
   (dolist (data options)
     (when data
       (apply #'process-option obj (mklist data))))
@@ -1358,7 +1364,7 @@ and have a last compile time which is greater than the last compile time of COMP
 
 (deftype system-name ()
   "The type which is a valid system name to define-system"
-  '(or symbol cons))
+  '(and (not null) (or symbol cons)))
 
 (deftype subsystem-definition ()
   'cons)
