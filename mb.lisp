@@ -34,7 +34,7 @@
   (:export
    ;; special vars
    #:*info-io* #:*compile-fails-behaviour* #:*compile-warns-behaviour* #:*load-fails-behaviour*
-   #:*fasl-output-root* #:*finders* #:*custom-search-functions*
+   #:*fasl-output-root* #:*finders* #:*custom-search-modules*
    #:*root-pathname* #:*sysdef-path* #:*systems-path*
 
    ;; types
@@ -66,7 +66,7 @@
    #:register-sysdefs
 
    ;; wildcard modules
-   #:wildcard-module #:wildcard-pathname-of
+   #:wildcard-module #:wildcard-pathname-of #:wildcard-searcher
 
    ;; patches
    #:load-patches #:create-patch-module #:patch
@@ -78,7 +78,7 @@
    #:run-shell-command #:implementation #:os #:platform #:normalize
 
    ;; provider related
-   #:with-provider #:url-of #:providerx
+   #:with-provider #:url-of #:provider
    )
 
   (:import-from  #.(package-name 
@@ -94,27 +94,53 @@
 
 ;;; SPECIALS
 (defvar *systems* ()
-  "List containing all the registered systems.")
+  "List containing all the defined systems in the Lisp image.")
 
-(defvar *info-io* *debug-io* "Stream where information messages are sent.")
-(defvar *compile-fails-behaviour* #+sbcl :error #-sbcl :warning "One of  nil, :error, :warning")
-(defvar *compile-warns-behaviour* :warning "One of  nil, :error, :warning")
-(defvar *load-fails-behaviour* :compile "One of :error, :compile, :load-source")
+(declaim (stream *info-io*)
+         ((member nil :warning :error) *compile-fails-behaviour*)
+         ((member nil :error) *compile-warns-behaviour*)
+         ((member :error :compile :load-source) *load-fails-behaviour*)
+         (pathname *root-pathname* *systems-path* *sysdef-path*)
+         ((or nil pathname) *fasl-output-root*)
+         (list *finders* *custom-search-modules*))
 
-(declaim (type pathname *root-pathname*))
+(defvar *info-io* *debug-io* "*info-io* intended to be bound to an output stream where information messages will be sent.
+Eg. On CLEAN-ACTION, when a file is actually deleted a message will be printed to *info-io*")
+
+(defvar *compile-fails-behaviour* #+sbcl :error #-sbcl :warning
+  "This describe the behaviour to take when compiling a file fails.
+When NIL then the error is ignored, when :WARNING then a WARNING is signalled
+and when :ERROR an error of type COMPILE-FAILED is signalled.")
+
+
+(defvar *compile-warns-behaviour* :warning
+    "This describe the behaviour to take when compiling a file signals a warning.
+When NIL then the warning is ignored and when :ERROR an error of type
+COMPILE-WARNED is signalled.")
+
+
+(defvar *load-fails-behaviour* :compile
+  "*LOAD-FAILS-BEHAVIOUR* controls the behaviour taken when loading a FASL file fails.
+When :ERROR then the error signalled by the call to LOAD is signalled. When the
+values is :COMPILE, the COMPONENT in question is compiled and then reloaded and finally
+when the value is :LOAD-SOURCE the source file of the COMPONENT is loaded.")
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (defparameter *root-pathname* mudballs.boot::*root-path*)
+  (defparameter *root-pathname* mudballs.boot::*root-path*
+    "*ROOT-PATHNAME* is the root of the mudballs directory and is used to compute
+*systems-path* and *sysdef-path*.")
 
 
   (defparameter *systems-path*
     (merge-pathnames (make-pathname :directory '(:relative "systems"))
                      *root-pathname*)
-    "The root directory for all mudballs systems.")
+    "This is the root directory for all of the systems defined.
+System paths take the form *systems-path* /SYSTEM-NAME/VERSION/")
 
   (defparameter *sysdef-path*
     (merge-pathnames (make-pathname :directory '(:relative "system-definitions"))
-                     *root-pathname*))
+                     *root-pathname*)
+    "This is the root folder of all of the mudballs system definition files.")
   )
 
 (defparameter *saved-slots* '(operation-times)
@@ -125,12 +151,17 @@
 
 (defparameter *processed-actions* nil)
 
-(defvar *fasl-output-root* nil "A directory or nil where fasl's are kept, if nil
-then the component source directory is used")
+(defvar *fasl-output-root* nil
+  "When non-nil specifies the root directory where all compiled lisp files are to be
+compiled to.")
 
 (defvar *builtin-systems* '(:mb.sysdef :sysdef-definitions))
 
-(defparameter *finders* '(default-system-finder))
+(defparameter *finders* '(default-system-finder)
+  "A list of functions with the arglist (name &rest args &key errorp version) which are used
+by FIND-SYSTEM and FIND-COMPONENT to lookup the system named by NAME.
+The function must either return the system with NAME or NIL indicating that it has failed
+to find an appropriate system and the next function on *FINDERS* should be used.")
 
 
 (defparameter *complex-spec-operators* '(and or not))
@@ -141,7 +172,12 @@ then the component source directory is used")
 
 (defvar *default-development-mode* nil)
 
-(defparameter *custom-search-functions* ())
+(defparameter *custom-search-modules* ()
+  "This list contains components (typically modules) which are used to supplement the default
+search paths for mudballs system definition files.
+The components on this list become part of the components of the standard sysdef-definition system
+which loads the system definitions. Adding components to this list will result in said components
+being loaded by register-sysdefs.")
 
 (defparameter *default-provider* ()
   "Bound to an instance of provider or NIL. Used as a default initarg for systems. ")
@@ -235,11 +271,6 @@ output to *VERBOSE-OUT*.  Returns the shell's exit code."
             (,@set-var ,get))
        (setf ,@set-var (nconc ,@set-var (list ,obj)))
        ,set)))
-
-(defun make-restarter (restart &rest args)
-  "Returns a function of 1 argument, which, when called, will invoke the restart RESTART with args."
-  #'(lambda (c) (apply #'invoke-restart (find-restart restart c) args)))
-
 
 (defun toplevel-component-of (component)
   "Returns the toplevel system for component."
@@ -1273,12 +1304,11 @@ and have a last compile time which is greater than the last compile time of COMP
                     #+lispworks :external-format #+lispworks :utf-8)
     (when warnings-p
       (case *compile-warns-behaviour*
-        (:warning (warn "COMPILE-FILE warned while compiling ~S." component))
         (:error (error 'compile-warned :file component))
         (t nil)))
     (when failure-p
       (case *compile-fails-behaviour*
-        (:warning (warn "COMPILE-FILE warned while compiling ~S." component))
+        (:warning (warn "COMPILE-FILE failed while compiling ~S." component))
         (:error (error 'compile-failed :file component))
         (t nil)))
     (unless output-file (error 'compilation-error :file (input-file component))))
@@ -1654,12 +1684,12 @@ but version ~A is already loaded." (version-string system) (name-of system)
   (:components  ("files" wildcard-module (:directory :wild-inferiors))))
 
 (defmethod components-of ((sys (eql (find-system :sysdef-definitions))))
-  (append (call-next-method) *custom-search-functions*))
+  (append (call-next-method) *custom-search-modules*))
 
 (defun register-sysdefs ()
   "Loads all system definition files that have been registered.
 ie. All that are part of the standard mudballs distribution or custom files
-loaded by functions on *custom-search-functions*."
+loaded by functions on *custom-search-modules*."
   (declare (values))
   (perform :sysdef-definitions 'load-action))
 
