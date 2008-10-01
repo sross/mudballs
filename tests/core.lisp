@@ -521,6 +521,16 @@ a list created by extracting SLOT-NAMES from form."
       (assert-equal (documentation :test 'system) (doc sys))
       (assert-equal (documentation "test" 'system) (doc sys)))))
 
+
+(defclass out-of-date-file (lisp-source-file) ())
+(defmethod out-of-date-p ((file out-of-date-file) (action action))
+  nil)
+
+(define-test force-test ()
+  (let ((comp (create-component nil "test" 'out-of-date-file)))
+    (assert-false (out-of-date-p comp (make-instance 'load-action)))
+    (assert-true (out-of-date-p comp (make-instance 'load-action :force t)))))
+
 ;(mb:test :mb.sysdef)
                      
 (princ (run-tests))

@@ -378,10 +378,10 @@ Please update the implementation function."))
   (documentation (find-system comp) t))
 
 
-
 ;;; ACTIONS
 (defclass ACTION ()
-  ((needs :initarg :needs :initform nil :accessor needs-of))
+  ((needs :initarg :needs :initform nil :accessor needs-of)
+   (force :initarg :force :initform nil :reader forcep))
   (:documentation "The core action class which will be applied to component's using execute."))
 
 (defmethod name-of ((action action))
@@ -994,6 +994,10 @@ Please update the implementation function."))
   (:documentation "Returns true if applying ACTION to COMPONENT is necessary.")
   (:method ((component t) (action t))
    (error "The required method OUT-OF-DATE-P is not implemented for ~S and ~S ." component action))
+  (:method :around ((component component) (action action))
+   (if (forcep action)
+       t
+       (call-next-method)))
   (:method ((component component) (action action))
    t))
 
