@@ -272,6 +272,11 @@ output to *VERBOSE-OUT*.  Returns the shell's exit code."
        (setf ,@set-var (nconc ,@set-var (list ,obj)))
        ,set)))
 
+
+(defun make-restarter (restart &rest args)
+  "Returns a function of 1 argument, which, when called, will invoke the restart RESTART with args."
+  #'(lambda (c) (apply #'invoke-restart (find-restart restart c) args)))
+
 (defun toplevel-component-of (component)
   "Returns the toplevel system for component."
   (if (null (parent-of component))
