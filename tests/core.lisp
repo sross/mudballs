@@ -300,10 +300,10 @@ a list created by extracting SLOT-NAMES from form."
 
 
 (define-test custom-sysdefs
-  (let* ((*custom-search-functions* ())
+  (let* ((*custom-search-modules* ())
          (system (find-system :sysdef-definitions))
          (current-size (length (components-of system)))
-         (*custom-search-functions* (list (create-component system "sydef" 'lisp-source-file))))
+         (*custom-search-modules* (list (create-component system "sydef" 'lisp-source-file))))
     (assert= (+ 1 current-size) (length (components-of system)))))
 
 
