@@ -73,8 +73,11 @@
    ;; PATCHES
    #:LOAD-PATCHES #:CREATE-PATCH-MODULE #:PATCH
 
-   ;; PREFERENCES
-   #:*LOAD-PREFERENCES* #:LOAD-PREFERENCES #:CREATE-PREFERENCE-COMPONENT
+   ;; CONFIG FILE
+   #:*LOAD-CONFIG* #:LOAD-CONFIG #:CREATE-CONFIG-COMPONENT
+
+   ;; PREFERNCES
+   #:PREFERENCE #:*LOAD-PREFERENCES*
 
    ;; MISC
    #:RUN-SHELL-COMMAND #:IMPLEMENTATION #:OS #:PLATFORM #:NORMALIZE
@@ -183,6 +186,13 @@ being loaded by register-sysdefs.")
 
 (defparameter *default-provider* ()
   "Bound to an instance of provider or NIL. Used as a default initarg for systems. ")
+
+(defvar *load-config* t)
+
+(defvar *bound-preferences* "Bound to the preferences of the system currently being loaded.")
+(defvar *load-preferences* t)
+
+
 
 ;;; UTILITIES
  ;; Stolen from ASDF
@@ -372,8 +382,8 @@ Please update the implementation function."))
    (directory :accessor directory-of :initarg :directory)
    (default-component-class :accessor default-component-class-of :initform 'lisp-source-file
                             :initarg :default-component-class)
-   (default-preference-class :accessor default-preference-class-of :initform 'preference-file
-                             :initarg :default-preference-class)))
+   (default-config-class :accessor default-config-class-of :initform 'config-file
+                             :initarg :default-config-class)))
 
 (defclass LAZY-MODULE (module) ())
 
@@ -389,8 +399,9 @@ Please update the implementation function."))
    (keywords :accessor keywords-of :initarg :keywords :initform ())
    (deprecated :accessor deprecatedp :initarg :deprecated :initform nil)
    (contact :accessor contact-of :initform "The Author" :initarg :contact)
-   (preferences :accessor preferences-of :initform nil :initarg :preferences)
-   (preference-component :accessor preference-component-of :initform nil)
+   (config :accessor config-file-of :initform nil :initarg :config)
+   (config-component :accessor config-component-of :initform nil)
+   (preference-file :accessor preference-file-of :initform nil :initarg :preferences)
    (provider :reader provider-of :initarg :provider :initform *default-provider*)
    (md5sum :reader md5sum-of :initarg :md5sum :initform nil)))
 
@@ -1533,7 +1544,7 @@ has been loaded into the the current Lisp image or nil.")
   (setf (system-loaded-p (name-of system)) system)
   (ensure-dependencies-up-to-date system)
   (load-patches system)
-  (load-preferences system))
+  (load-config system))
 
 (defgeneric ensure-dependencies-up-to-date (system)
   (:method ((system system))
@@ -1751,56 +1762,61 @@ loaded by functions on *custom-search-modules*."
   `(setf (patch-version-of *system-being-patched*)
          ',version))
 
-;;; BOOTSTRAP
-;; And now we create ourself as a system
-(define-system :mb.sysdef ()
-  (:author "Sean Ross")
-  (:supports (:implementation :lispworks :sbcl :cmucl :clisp :allegrocl :abcl :ecl :openmcl))
-  (:contact "sross@common-lisp.net")
-  (:version 1)
-  (:preferences #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
-  (:components "mb"))
-
-;; and register ourselves as loaded
-(let ((first-file (find-component :mb.sysdef "mb")))
-  (setf (time-of first-file (make-instance 'load-action))
-        (get-universal-time)))
 
 
-(defpackage :sysdef-user (:use :cl :mb.sysdef))
+;; CONFIG FILES
+(defclass config-file (lisp-source-file) ())
 
+(defun config-file-exists-p (sys)
+  (and (config-file-of sys) (probe-file (config-file-of sys))))
 
-;; Loading Users config file.
-(defclass preference-file (lisp-source-file) ())
-(defmethod print-object ((obj preference-file) stream)
-  (if *print-escape*
-      (print-unreadable-object (obj stream :type t :identity t)
-        (princ (pathname-of obj) stream))
-      (princ (pathname-of obj) stream)))
-
-(defvar *load-preferences* t)
-
-(defun preference-file-exists-p (sys)
-  (and (preferences-of sys) (probe-file (preferences-of sys))))
-
-(defgeneric load-preferences (system)
+(defgeneric load-config (system)
   (:method :around ((sys system))
-   (when (and *load-preferences* (preference-file-exists-p sys))
+   (when (and *load-config* (config-file-exists-p sys))
      (call-next-method)))
   (:method ((sys system))
-   (let ((component (orf (preference-component-of sys)
-                         (create-preference-component sys))))
+   (let ((component (orf (config-component-of sys)
+                         (create-config-component sys))))
      (execute component 'load-source-action))))
 
-(defgeneric create-preference-component (system)
+(defgeneric create-config-component (system)
   (:method ((system system))
-   (let ((path (preferences-of system)))
-     (create-component system "preference-file"
-                       (default-preference-class-of system)
+   (let ((path (config-file-of system)))
+     (create-component system (namestring path)
+                       (default-config-class-of system)
                        `((:pathname ,path))))))
 
 
-;;; System Providers and Definition Files
+
+;; PREFERENCE FILES
+;; Preferences files are files which contain symbol => value mappings which are made available
+;; at system load time.
+(defclass preference-file (file) ())
+
+(defun preference-file-exists-p (sys)
+  (and (preference-file-of sys) (probe-file (preference-file-of sys))))
+
+(defun contents-of (stream)
+  (with-standard-io-syntax
+    (let ((*read-eval* nil))
+      (loop :for form = (read stream nil stream)
+            :until (eq form stream)
+            :collect form))))
+
+(defmethod preferences-of ((system system))
+  (when (and *load-preferences* (preference-file-exists-p system))
+    (with-open-file (input (preference-file-of system))
+      (contents-of input))))
+
+(defun preference (name)
+  (cadr (assoc name *bound-preferences* :test 'string-equal)))
+
+(defmethod execute :around ((system system) (action source-file-action))
+  (let ((*bound-preferences* (preferences-of system)))
+    (call-next-method)))
+
+
+;;; SYSTEM PROVIDERS AND DEFINITION FILES
 (defvar *extracting-url* nil)
 (defun definition-file-provider-url (file)
   (catch 'url
@@ -1818,8 +1834,6 @@ loaded by functions on *custom-search-modules*."
            *registered-providers*))
 
     
-
-
 (defclass provider ()
   ((url :initarg :url :reader url-of :initform nil)
    (contact :initarg :contact :reader contact-of :initform nil)))
@@ -1848,6 +1862,26 @@ loaded by functions on *custom-search-modules*."
 (defclass grovel-file (lisp-file)
   ()
   (:default-initargs :type "cffi.lisp"))
+
+
+
+;;; BOOTSTRAP
+;; And now we create ourself as a system
+(define-system :mb.sysdef ()
+  (:author "Sean Ross")
+  (:supports (:implementation :lispworks :sbcl :cmucl :clisp :allegrocl :abcl :ecl :openmcl))
+  (:contact "sross@common-lisp.net")
+  (:version 1 2)
+  (:config #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
+  (:components "mb"))
+
+;; and register ourselves as loaded
+(let ((first-file (find-component :mb.sysdef "mb")))
+  (setf (time-of first-file (make-instance 'load-action))
+        (get-universal-time)))
+
+
+(defpackage :sysdef-user (:use :cl :mb.sysdef))
 
 
 ;; EOF

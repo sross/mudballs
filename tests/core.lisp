@@ -452,40 +452,63 @@ a list created by extracting SLOT-NAMES from form."
   (assert-error 'error (coerce-to-version "not-a-version"))
   (assert-error 'error (coerce-to-version 'not-a-version)))
 
-(defclass test-preference-file (preference-file) ())
+(defclass test-config-file (config-file) ())
 
-
-
-(defmethod component-exists-p ((component test-preference-file))
+(defmethod component-exists-p ((component test-config-file))
   t)
 
-(defmethod execute ((file test-preference-file) (action load-source-action))
+(defmethod execute ((file test-config-file) (action load-source-action))
   (princ "exec"))
 
-(defmethod input-write-date ((file test-preference-file))
+(defmethod input-write-date ((file test-config-file))
   (get-universal-time))
 
-(define-test preferences
+(define-test config
   (with-test-systems ()
-    (dflet ((preference-file-exists-p (x) (declare (ignore x)) t))
+    (dflet ((config-file-exists-p (x) (declare (ignore x)) t))
       (let ((sys (define-test-system :pref-sys ()
-                   (:default-preference-class test-preference-file)
-                   (:preferences "core.lisp"))))
-        (assert-prints "exec" (load-preferences sys))
-        (assert-prints ""  (load-preferences sys)))
+                   (:default-config-class test-config-file)
+                   (:config "core.lisp"))))
+        (assert-prints "exec" (load-config sys))
+        (assert-prints ""  (load-config sys)))
       (let ((sys (define-test-system :pref-sys ()
-                   (:default-preference-class test-preference-file)
-                   (:preferences "core.lisp")))
-            (*load-preferences* nil))
-        (assert-prints "" (load-preferences sys))
-        (assert-prints ""  (load-preferences sys))))))
+                   (:default-config-class test-config-file)
+                   (:config "core.lisp")))
+            (*load-config* nil))
+        (assert-prints "" (load-config sys))
+        (assert-prints "" (load-config sys))))))
 
 
+
+(define-test contents-of
+  (with-test-systems ()
+    (let ((fake-file "(:featuritis t)"))
+      (with-open-stream (stream (make-string-input-stream fake-file))
+        (assert-equal '((:featuritis t)) (contents-of stream))))
+    (let ((fake-file "(:featuritis #.t)"))
+      (with-open-stream (stream (make-string-input-stream fake-file))
+        (assert-error 'reader-error (contents-of stream))))))
+
+(defclass preferences-system (system) ())
+(defmethod preferences-of ((system preferences-system))
+  '((:test-pref "my-preferences")))
+
+(defmethod execute ((sys preferences-system) (action action))
+  (throw 'pref (preference :test-pref)))
+
+(define-test preferences
+  (assert-true (subtypep 'preference-file 'file))
+  (let ((*bound-preferences* '((:test-pref "my-preference"))))
+    (assert-equal "my-preference" (preference :test-pref)))
+  (with-test-systems ()
+    (define-test-system :pref-sys (preferences-system) ())
+    (assert-equal "my-preferences" (catch 'pref (execute :pref-sys 'load-action)))))
+      
+                      
 (define-test duplicate-component
   (with-test-systems ()
     (assert-error 'duplicate-component (define-system :test-dups () (:components "foo" "foo")))
     (assert-error 'duplicate-component (define-system :test-dups () (:components "foo" "Foo")))))
-
 
 (define-test clean-action-test
   (with-test-systems (default-test-systems dependent-test-systems)
@@ -530,6 +553,8 @@ a list created by extracting SLOT-NAMES from form."
   (let ((comp (create-component nil "test" 'out-of-date-file)))
     (assert-false (out-of-date-p comp (make-instance 'load-action)))
     (assert-true (out-of-date-p comp (make-instance 'load-action :force t)))))
+
+
 
 ;(mb:test :mb.sysdef)
                      
