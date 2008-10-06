@@ -555,7 +555,17 @@ a list created by extracting SLOT-NAMES from form."
     (assert-true (out-of-date-p comp (make-instance 'load-action :force t)))))
 
 
-
+(define-test multiple-directory-module ()
+  (with-test-systems ()
+    (let ((sys (define-test-system :multi-dir-test ()
+                 (:components (:foo module
+                               (:directory ("dir1" "dir2")))))))
+      (assert-equal '(:relative "multi-dir-test") (module-directory sys))
+      (assert-equal '(:relative "dir1" "dir2")
+                    (module-directory (find-component sys :foo)))
+      (assert-equal (namestring (make-pathname :directory '(:relative "dir1" "dir2")))
+                    (enough-namestring (component-pathname (find-component sys :foo))
+                                       (component-pathname sys))))))
 ;(mb:test :mb.sysdef)
                      
 (princ (run-tests))

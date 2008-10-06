@@ -966,9 +966,9 @@ them against component."))
    (with-slots (directory name) module
      (if (slot-boundp module 'directory)
          (if directory
-             (list :relative (string-downcase (or directory name)))
+             (cons :relative (mapcar 'string-downcase (mklist directory)))
              nil)
-         (list :relative (string-downcase name))))))
+         (cons :relative (mapcar 'string-downcase (mklist name)))))))
 
 (defgeneric component-pathname (file)
   (:method :around ((obj component))
