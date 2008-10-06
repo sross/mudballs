@@ -102,11 +102,11 @@
   "List containing all the defined systems in the Lisp image.")
 
 (declaim (stream *info-io*)
-         ((member nil :warning :error) *compile-fails-behaviour*)
-         ((member nil :error) *compile-warns-behaviour*)
-         ((member :error :compile :load-source) *load-fails-behaviour*)
+         (type (member nil :warning :error) *compile-fails-behaviour*)
+         (type (member nil :error) *compile-warns-behaviour*)
+         (type (member :error :compile :load-source) *load-fails-behaviour*)
          (pathname *root-pathname* *systems-path* *sysdef-path*)
-         ((or null pathname) *fasl-output-root*)
+         (type (or null pathname) *fasl-output-root*)
          (list *finders* *custom-search-modules*))
 
 (defvar *info-io* *debug-io* "*info-io* intended to be bound to an output stream where information messages will be sent.
@@ -805,18 +805,28 @@ them against component."))
 (full-data-option uses-macros-from :uses-macros-from)
 
 ;; Development Mode
+;; We need to make sure that we remove the trailing (fasl-path) folders from the load-pathname since
+;; the output path for custom sysdef files is <location>/.fasl/etc/etc/
 (defun current-directory ()
   (directory-namestring *load-truename*))
 
+(defun pathname-without (pathname dirs)
+  (let ((all-dirs (pathname-directory pathname))
+        (fasl-dirs (pathname-directory dirs)))
+    (let ((mismatch (mismatch all-dirs fasl-dirs :from-end t :test 'string=)))
+      (make-pathname :directory (if mismatch (subseq all-dirs 0 mismatch) all-dirs)
+                     :defaults pathname))))
+
 (defmethod process-option :after ((system system) (key (eql :development)) &rest data)
   (when-let (value (first data))
-    (setf (pathname-of system) (current-directory))))
+    (setf (pathname-of system) (pathname-without (current-directory) (fasl-path system)))))
 
 ;; This also needs to run after initialize-instance in case *default-development-mode* is bound to true
 (defmethod initialize-instance :after ((system system) &rest initargs &key)
   (declare (ignore initargs))
   (when (development-mode system)
-    (setf (pathname-of system) (current-directory))))
+    (setf (pathname-of system) (pathname-without (current-directory) (fasl-path system)))))
+
 
 
 ;;; VERSION PROCESSING AND DEFAULT SYSTEM FINDER
@@ -985,6 +995,7 @@ them against component."))
    (merge-pathnames (make-pathname :type (file-type file) :name (string-downcase (name-of file)))
                     (component-pathname (parent-of file)))))
 
+
 (defgeneric input-file (component)
   (:method ((component file))
    (component-pathname component)))
@@ -995,11 +1006,11 @@ them against component."))
 
 
 (defun legalify (string)
-  (let ((sans  (remove-if-not #'alphanumericp string)))
+  (let ((sans (remove-if-not #'alphanumericp string)))
     (map-into (make-string (min 10 (length sans)) :element-type 'base-char) 'identity sans)))
 
-(defgeneric fasl-path (root-system component)
-  (:method ((system component) (component component))
+(defgeneric fasl-path (system)
+  (:method ((system t))
    (make-pathname :directory (cons :relative
                                    (mapcar 'string-downcase
                                            (list ".fasl" (legalify (software-type))
@@ -1012,7 +1023,10 @@ them against component."))
 (defgeneric output-file (component)
   (:method :around ((file file))
    (or (output-pathname-of file)
-       (compile-file-pathname (merge-pathnames (fasl-path (toplevel-component-of file) file) (call-next-method file)))))
+       (compile-file-pathname (merge-pathnames (fasl-path file) (call-next-method file)))))
+  (:method :around ((module module))
+   (or (pathname-of module)
+       (call-next-method)))
   (:method ((component component)) nil)
   (:method ((sys null)) (merge-pathnames (make-pathname :version :newest)
                                          (or *fasl-output-root* *systems-path*)))
@@ -1031,7 +1045,6 @@ them against component."))
 (defgeneric output-write-date (component)
   (:method ((component file))
    (file-write-date (output-file component))))
-
 
 (defgeneric all-files (module &key type)
   (:documentation "Returns a list of all components of TYPE in the modules subtree")
@@ -1205,7 +1218,6 @@ and have a last compile time which is greater than the last compile time of COMP
   (unless (component-exists-p system)
     (restart-case (error 'system-not-intalled :system system)
       (install () :report "Install" (execute system 'install-action)))))
-
 
 (defmethod execute :before ((component component) (action action))
   (when (check-supports component action)
@@ -1690,7 +1702,7 @@ but version ~A is already loaded." (version-string system) (name-of system)
                                    (default-component-class-of module)
                                    `((:pathname ,file)
                                      (:development-systems ,(development-mode-of module))
-                                     (:output-pathname ,(compile-file-pathname file))))))
+                                     (:output-pathname ,(merge-pathnames (fasl-path file) (compile-file-pathname file)))))))
 
 (defun wildcard-searcher (path &key development-mode)
   (make-instance 'wildcard-sysdef-searcher :search-directory path :development-mode development-mode))
@@ -1702,8 +1714,6 @@ but version ~A is already loaded." (version-string system) (name-of system)
 (defmethod execute ((file sysdef-file) (action load-action))
   (let ((*default-development-mode* (development-systems-p file)))
     (call-next-method)))
-
-
 
 (define-system :SYSDEF-DEFINITIONS ()
   (:pathname #.*sysdef-path*)
@@ -1761,7 +1771,7 @@ loaded by functions on *custom-search-modules*."
                    *root-pathname*))
 
 (defmethod output-file ((module patch-module))
-  (merge-pathnames (fasl-path (toplevel-component-of module) module) (component-pathname module)))
+  (merge-pathnames (fasl-path module) (component-pathname module)))
 
 (defmacro patch (version &key)
   `(setf (patch-version-of *system-being-patched*)
@@ -1787,7 +1797,7 @@ loaded by functions on *custom-search-modules*."
 (defgeneric create-config-component (system)
   (:method ((system system))
    (let ((path (config-file-of system)))
-     (create-component system (namestring path)
+     (create-component system (pathname-name path)
                        (default-config-class-of system)
                        `((:pathname ,path))))))
 
@@ -1878,7 +1888,7 @@ loaded by functions on *custom-search-modules*."
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :allegrocl :abcl :ecl :openmcl))
   (:contact "sross@common-lisp.net")
   (:version 1 2)
-  (:pathname #.(directory-namestring *compile-file-pathname*))
+  (:pathname #.(directory-namestring *compile-file-truename*))
   (:config #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "mb"))
 

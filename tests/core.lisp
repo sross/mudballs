@@ -291,12 +291,12 @@ a list created by extracting SLOT-NAMES from form."
       (define-system :test-dev-mode ()
         (:development t))
       (assert-true (development-mode (find-component :test-dev-mode)))
-      (assert-equal "/tmp/" (pathname-of (find-component :test-dev-mode)))
+      (assert-equal #P"/tmp/" (pathname-of (find-component :test-dev-mode)))
 
       (let ((*default-development-mode* t))
         (define-system :test-dev-mode2 ()())
         (assert-true (development-mode (find-component :test-dev-mode2)))
-        (assert-equal "/tmp/" (pathname-of (find-component :test-dev-mode2)))))))
+        (assert-equal #P"/tmp/" (pathname-of (find-component :test-dev-mode2)))))))
 
 
 (define-test custom-sysdefs
@@ -322,7 +322,8 @@ a list created by extracting SLOT-NAMES from form."
 
              (let ((components (create-wildcard-components component (directory (wildcard-pathname-of component)))))
                (mapcar #'(lambda (comp)
-                           (assert-equal (compile-file-pathname (pathname-of comp) ) (output-pathname-of comp))
+                           (assert-equal (compile-file-pathname (pathname-of comp))
+                                         (pathname-without (output-pathname-of comp) (fasl-path comp)))
                            (assert-eql (development-mode-of component) (development-systems-p comp)))
                        components)))))
     (test-once nil)
