@@ -156,9 +156,10 @@ System paths take the form *systems-path* /SYSTEM-NAME/VERSION/")
 
 (defparameter *processed-actions* nil)
 
-(defvar *fasl-output-root* nil
+(defvar *fasl-output-root* (or mudballs.boot:*fasl-root* nil) ;; this is the preference :fasl-output-root
   "When non-nil specifies the root directory where all compiled lisp files are to be
-compiled to.")
+compiled to.
+This can be set using the preference (in ~/.mudballs.prefs) :fasl-output-root")
 
 (defvar *builtin-systems* '(:mb.sysdef :sysdef-definitions))
 
@@ -1021,12 +1022,6 @@ them against component."))
 ;; While this is remarkably similar to component-pathname we keep them in 2 different methods to
 ;; allow for seperate customization on file location and the output of FASL's
 (defgeneric output-file (component)
-  (:method :around ((file file))
-   (or (output-pathname-of file)
-       (compile-file-pathname (merge-pathnames (fasl-path file) (call-next-method file)))))
-  (:method :around ((module module))
-   (or (pathname-of module)
-       (call-next-method)))
   (:method ((component component)) nil)
   (:method ((sys null)) (merge-pathnames (make-pathname :version :newest)
                                          (or *fasl-output-root* *systems-path*)))
@@ -1036,6 +1031,9 @@ them against component."))
   (:method ((module module))
    (merge-pathnames (make-pathname :directory (module-directory module))
                     (output-file (parent-of module))))
+  (:method :around ((file file))
+   (or (output-pathname-of file)
+       (compile-file-pathname (merge-pathnames (fasl-path file) (call-next-method file)))))
   (:method ((file file)) ;;what about the rest of the components. version etc.
    (merge-pathnames (make-pathname :type (file-type file)
                                    :name (string-downcase (name-of file)))
