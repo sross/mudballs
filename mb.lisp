@@ -439,13 +439,16 @@ Please update the implementation function."))
 
 (defgeneric coerce-to-action (thing &rest initargs)
   (:documentation "Converts THING (a class designator) into an action")
-  (:method ((action action) &rest initargs) action )
+  (:method ((action action) &rest initargs)
+   (declare (ignore initargs))
+   action )
   ;; we lookup the make-instance symbol each time here to prevent lispworks
   ;; from optimizing away the make-instance call and thus losing possible
   ;; methods on make-instance which causes autloading of action classes to fail.
   (:method ((action symbol) &rest initargs)
    (apply (find-symbol "MAKE-INSTANCE") action initargs))
   (:method (action &rest initargs)
+   (declare (ignore initargs))
    (error "Don't know how to coerce ~S into an action." action)))
 
 
@@ -605,6 +608,7 @@ them against component."))
    (perform system (apply 'coerce-to-action action-key initargs)))
 
   (:method ((system component) (action action) &rest action-data &key &allow-other-keys)
+   (declare (ignore action-data))
    (let ((*processed-actions* (acons nil nil nil)))
      (execute system action))))
 
@@ -829,7 +833,7 @@ them against component."))
   (let ((version (coerce-to-version spec))
         (against (coerce-to-version against-spec)))
     (assert (exact-version-spec-p version) (version)
-      "must designate an exact version")    
+      "must designate an exact version")
     (cond ((exact-version-spec-p against)
            (version= version against))
           ((bounding-version-spec-p against)
@@ -994,12 +998,13 @@ them against component."))
   (let ((sans  (remove-if-not #'alphanumericp string)))
     (map-into (make-string (min 10 (length sans)) :element-type 'base-char) 'identity sans)))
 
-(defmethod fasl-path (root-system component)
-  (make-pathname :directory (cons :relative
-                                  (mapcar 'string-downcase
-                                          (list ".fasl" (legalify (software-type))
-                                                (legalify (lisp-implementation-type))
-                                                (legalify (lisp-implementation-version)))))))
+(defgeneric fasl-path (root-system component)
+  (:method ((system component) (component component))
+   (make-pathname :directory (cons :relative
+                                   (mapcar 'string-downcase
+                                           (list ".fasl" (legalify (software-type))
+                                                 (legalify (lisp-implementation-type))
+                                                 (legalify (lisp-implementation-version))))))))
 
 
 ;; While this is remarkably similar to component-pathname we keep them in 2 different methods to
@@ -1715,7 +1720,7 @@ loaded by functions on *custom-search-modules*."
   (declare (values))
   (perform :sysdef-definitions 'load-action))
 
-;; and force system update on any action
+;; and force system registration 
 (defmethod perform :before ((sys system) (action action) &rest plan-data)
   (declare (ignorable plan-data))
   (unless (member (name-of sys) *builtin-systems*)
@@ -1803,10 +1808,11 @@ loaded by functions on *custom-search-modules*."
             :until (eq form stream)
             :collect form))))
 
-(defmethod preferences-of ((system system))
-  (when (and *load-preferences* (preference-file-exists-p system))
-    (with-open-file (input (preference-file-of system))
-      (contents-of input))))
+(defgeneric preferences-of (system)
+  (:method ((system system))
+   (when (and *load-preferences* (preference-file-exists-p system))
+     (with-open-file (input (preference-file-of system))
+       (contents-of input)))))
 
 (defun preference (name)
   (cadr (assoc name *bound-preferences* :test 'string-equal)))
@@ -1872,6 +1878,7 @@ loaded by functions on *custom-search-modules*."
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :allegrocl :abcl :ecl :openmcl))
   (:contact "sross@common-lisp.net")
   (:version 1 2)
+  (:pathname #.(directory-namestring *compile-file-pathname*))
   (:config #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "mb"))
 
