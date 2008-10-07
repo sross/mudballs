@@ -80,7 +80,7 @@
    #:PREFERENCE #:*LOAD-PREFERENCES*
 
    ;; MISC
-   #:RUN-SHELL-COMMAND #:IMPLEMENTATION #:OS #:PLATFORM #:NORMALIZE
+   #:RUN-SHELL-COMMAND #:IMPLEMENTATION #:OS #:PLATFORM
 
    ;; PROVIDER RELATED
    #:WITH-PROVIDER #:URL-OF #:PROVIDER
@@ -926,7 +926,13 @@ them against component."))
         ((version-spec-p spec) spec)
         (t (if errorp
                (error "Invalid version spec ~S." spec)
-               spec))))
+               nil))))
+
+(defun versionp (thing)
+  (coerce-to-version thing :errorp nil))
+
+(deftype version-designator ()
+  `(satisfies versionp))
 
 (defun split-version-string (spec)
   (mapcar (lambda (part)
@@ -1028,6 +1034,10 @@ them against component."))
   (:method ((system system))
    (merge-pathnames (make-pathname :directory (list :relative (version-string (version-of system))))
                     (call-next-method)))
+  (:method :around ((module module))
+   (or (pathname-of module)
+       (call-next-method)))
+
   (:method ((module module))
    (merge-pathnames (make-pathname :directory (module-directory module))
                     (output-file (parent-of module))))
