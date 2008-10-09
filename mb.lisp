@@ -97,6 +97,15 @@
 
 (in-package :mb.sysdef)
 
+;;; TYPES
+(deftype system-name ()
+  "The type which is a valid system name to define-system.
+This is either a symbol, which designates a system definition
+or a list of the form (PARENT-SYSTEM-NAME [MODULE-NAME]* SYSTEM-NAME])
+which will define a module on PARENT-SYSTEM-NAME or on module found by
+descending into PARENT-SYSTEM-NAME's components using MODULE-NAMES."
+  '(and (not null) (or symbol cons)))
+
 ;;; SPECIALS
 (defvar *systems* ()
   "List containing all the defined systems in the Lisp image.")
@@ -1396,7 +1405,7 @@ for define-system. This has only been tested with Lispworks at the moment. Sorry
 
 ;;; SYSTEM CREATION AND LOCATION
 (defmacro define-system (name (&optional (class 'system)) &body options)
-  (declare (system-name name) (symbol class) (values system))
+  (declare (system-name name) (symbol class))
   "Define a system called NAME of type CLASS and customized using OPTIONS.
 NAME may be a symbol, which defines a system called name, or a list
 of the form (SYSTEM [MODULES*] NAME) which defines a new MODULE on component
@@ -1501,13 +1510,6 @@ information purposes only
 
 ) ;;eval-when
 
-(deftype system-name ()
-  "The type which is a valid system name to define-system.
-This is either a symbol, which designates a system definition
-or a list of the form (PARENT-SYSTEM-NAME [MODULE-NAME]* SYSTEM-NAME])
-which will define a module on PARENT-SYSTEM-NAME or on module found by
-descending into PARENT-SYSTEM-NAME's components using MODULE-NAMES."
-  '(and (not null) (or symbol cons)))
 
 (deftype subsystem-definition ()
   'cons)
