@@ -80,10 +80,10 @@
    #:PREFERENCE #:*LOAD-PREFERENCES*
 
    ;; MISC
-   #:RUN-SHELL-COMMAND #:IMPLEMENTATION #:OS #:PLATFORM
+   #:RUN-SHELL-COMMAND #:IMPLEMENTATION #:OS #:PLATFORM #:NORMALIZE
 
    ;; PROVIDER RELATED
-   #:WITH-PROVIDER #:URL-OF #:PROVIDER
+   #:with-provider #:URL-OF #:provider 
    )
 
   (:import-from  #.(package-name 
@@ -400,7 +400,7 @@ Please update the implementation function."))
    (keywords :accessor keywords-of :initarg :keywords :initform ())
    (deprecated :accessor deprecatedp :initarg :deprecated :initform nil)
    (contact :accessor contact-of :initform "The Author" :initarg :contact)
-   (config :accessor config-file-of :initform nil :initarg :config)
+   (config :accessor config-file-of :initform nil :initarg :config-file)
    (config-component :accessor config-component-of :initform nil)
    (preference-file :accessor preference-file-of :initform nil :initarg :preferences)
    (provider :reader provider-of :initarg :provider :initform *default-provider*)
@@ -624,7 +624,6 @@ them against component."))
       (apply #'process-option obj (mklist data))))
   obj)
 
-
 ;; Lispworks doesn't do initialization argument validity checking for
 ;; reinitialize-instance so we do it manually here.
 ;; This is to stop me from going insane when i wonder why an, unnoticed,
@@ -637,6 +636,21 @@ them against component."))
   #+lispworks
   (assert (valid-initarg-p comp key) (key) "~S is an illegal DEFINE-SYSTEM option." key)
   (reinitialize-instance comp key (first data)))
+
+
+
+
+(defmacro define-option (key &optional docstring)
+  `(defmethod process-option ((comp component) (key (eql ,key)) &rest data)
+     ,@(when docstring (list docstring))
+     (reinitialize-instance comp ,key (first data))))
+
+
+
+
+
+
+
 
 
 ;; SUPPORTS
@@ -1368,8 +1382,97 @@ and have a last compile time which is greater than the last compile time of COMP
     (delete-file output-file)))
 
 
+
+(defmethod documentation ((name (eql 'define-system)) (key (eql 'function)))
+  (format nil "~a" (call-next-method)
+          (possible-define-system-options)))
+
+(defun possible-define-system-options ()
+  "this is a helper method which creates some html text from slots and
+process-option methods to create a guaranteed up to date option list
+for define-system. This has only been tested with Lispworks at the moment. Sorry :("
+  ""
+  )
+
 ;;; SYSTEM CREATION AND LOCATION
 (defmacro define-system (name (&optional (class 'system)) &body options)
+  (declare (system-name name) (symbol class) (values system))
+  "Define a system called NAME of type CLASS and customized using OPTIONS.
+NAME may be a symbol, which defines a system called name, or a list
+of the form (SYSTEM [MODULES*] NAME) which defines a new MODULE on component
+found by descending into systems components. See SYSTEM-NAME.
+
+None of the arguments are evaluated.
+OPTIONS = OPTION*
+OPTION = (key . values)
+OPTIONS are processed using process-options.
+
+Systems are unique on a name (tested using string-equal), version basis.
+
+<strong>Available Options:</strong>
+
+<strong>:pathname</strong> <i>path</i>
+Sets the root pathname of the system to PATH. (See component-pathname for more info)
+
+<strong>:default-component-class</strong> <i>class-name</i>
+This specifies the default class for components of this system. The default is LISP-SOURCE-FILE.
+
+<strong>:version</strong> <i>&rest version-numbers</i>
+This sets the version of the system, if not supplied it default to (0 0 1).
+Versions are specified as a list of numbers eg.
+\(:version 0 1 2)
+
+<strong>:deprecated</strong> <i>name-or-t</i>
+Setting deprecated indicates that this system is depcrecated and a warning will be signalled
+when loading this system. if NAME-OR-T is a system name then that name will be recommended in
+the warning as a replacement.
+
+<strong>:serial</strong> <i>boolean</i>
+Specifying serial indicates that all components adding to the system will :REQUIRE the component
+before it. This is identical to the ASDF meaning of :serial.
+
+<strong>:directory</strong> <i>name</i>
+This specifies the directory where the source of system which will be reside. This directory is
+appended to the *systems-path*. If not specified it defaults to (string-downcase name-of-system).
+This option is defined on the module class and as such is available for modules as well.
+A value of NIL is also permissible and specifies that the pathname of the component will be the
+same as the pathname of the components parent (see .
+A List is permissible as well and is a way to indicate multiple directories in a portable manner.
+eg. (:directory (\"dir-1\" \"dir-2\"))
+
+<strong>:components</strong> <i>component-spec</i>
+Adds all components specified by component spec to system.
+
+component-spec is a list of the form
+<tt>
+COMPONENT*
+COMPONENT =&gt; (name [type] [OPTIONS*))
+</tt>
+If only NAME is provied, ie the component spec is (NAME), then it may be simplified to NAME.
+This creates a component of type TYPE with a name of NAME, updates the component with OPTIONS
+and adds the component to the systems component list.
+
+eg. (:components \"packages\" \"macros\" \"functions\")
+
+
+The following options sets a slot on the system (using reinitialize-instance) and are generally used for
+information purposes only
+<strong>:contact, :author, :maintainer, :licence, :license, :contact, :documentation</strong>
+
+
+<strong>The following options are currently undocumented.</strong>
+:config-file
+:development
+:output-pathname
+:preferences
+:default-config-class
+:if-supports-fails
+:uses-macros-from
+:keywords
+:requires
+:needs
+:supports
+"
   (if (multiple-version-definitions-p options)
       `(progn
          ,@(expand-multiple-versions name class options))
@@ -1399,7 +1502,11 @@ and have a last compile time which is greater than the last compile time of COMP
 ) ;;eval-when
 
 (deftype system-name ()
-  "The type which is a valid system name to define-system"
+  "The type which is a valid system name to define-system.
+This is either a symbol, which designates a system definition
+or a list of the form (PARENT-SYSTEM-NAME [MODULE-NAME]* SYSTEM-NAME])
+which will define a module on PARENT-SYSTEM-NAME or on module found by
+descending into PARENT-SYSTEM-NAME's components using MODULE-NAMES."
   '(and (not null) (or symbol cons)))
 
 (deftype subsystem-definition ()
@@ -1527,8 +1634,9 @@ module to be the parent of new-module with version VERSION."
        (when errorp (error  'no-such-component :name name :parent parent)))))
 
 (deftype system-designator ()
-  "The type system-designator denotes the set of lisp objects which can be used to lookup a system."
-  `(or string symbol))
+  "The type system-designator denotes the set of lisp objects which can be used to lookup a system.
+It is either a string or symbol designating the system with that name, or a system designating itself."
+  `(or string symbol system))
 
 ;; This could do with a better name
 (defun normalize (name)
@@ -1833,6 +1941,7 @@ loaded by functions on *custom-search-modules*."
        (contents-of input)))))
 
 (defun preference (name)
+  (declare (symbol name))
   (cadr (assoc name *bound-preferences* :test 'string-equal)))
 
 (defmethod execute :around ((system system) (action source-file-action))
@@ -1860,13 +1969,19 @@ loaded by functions on *custom-search-modules*."
     
 (defclass provider ()
   ((url :initarg :url :reader url-of :initform nil)
-   (contact :initarg :contact :reader contact-of :initform nil)))
+   (contact :initarg :contact :reader contact-of :initform nil))
+  (:documentation "The PROVIDER class abstracts the location
+from which systems may be downloaded from. Systems with a bound provider slot
+\(accessible using provider-of) typically indicates that a system has been
+defined in the context of a with-provider macro and may be installed automactically."))
 
 (defun register-provider (url &key contact)
   (orf (gethash url *registered-providers*)
        (make-instance 'provider :url url :contact contact)))
 
 (defmacro with-provider ((&key url contact) &body body)
+  "Executes BODY in a dynamic context where all systems defined,
+typically using define-system, will have a provider with a url of URL."
   `(if *extracting-url*
        (throw 'url ,url)
        (let ((*default-provider* (register-provider ,url :contact ,contact)))
@@ -1895,9 +2010,9 @@ loaded by functions on *custom-search-modules*."
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :allegrocl :abcl :ecl :openmcl))
   (:contact "sross@common-lisp.net")
-  (:version 1 2)
-  (:pathname #.(directory-namestring *compile-file-truename*))
-  (:config #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
+  (:version 0 1)
+  (:pathname #.(directory-namestring (or *compile-file-truename* "")))
+  (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "mb"))
 
 ;; and register ourselves as loaded
