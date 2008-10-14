@@ -127,7 +127,7 @@ When NIL then the error is ignored, when :WARNING then a WARNING is signalled
 and when :ERROR an error of type COMPILE-FAILED is signalled.")
 
 
-(defvar *compile-warns-behaviour* :warning
+(defvar *compile-warns-behaviour* nil
     "This describe the behaviour to take when compiling a file signals a warning.
 When NIL then the warning is ignored and when :ERROR an error of type
 COMPILE-WARNED is signalled.")
