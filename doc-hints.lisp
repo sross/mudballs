@@ -26,6 +26,8 @@ database backends) without cluttering up the global system namespace."))
 
 
 (:macro define-system
+ (:exceptional-situations "If multiple components with the same name are specified in a components
+list an error of type duplicate-component will be signalled.")
  (:examples
   "<pre>
 (define-system :test ()

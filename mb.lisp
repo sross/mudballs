@@ -47,8 +47,8 @@
    #:COMPONENT-PATHNAME #:INPUT-FILE #:INPUT-WRITE-DATE #:FASL-PATH #:OUTPUT-FILE #:OUTPUT-WRITE-DATE
    #:ALL-FILES  #:OUT-OF-DATE-P #:DEPENDENCY-APPLICABLEP
    #:COMPONENT-DEPENDENCIES #:ACTION-DEPENDENCIES #:DEPENDENCIES-OF #:COMPONENT-EXISTS-P
-   #:COMPONENT-OUTPUT-EXISTS-P  #:APPLICABLE-COMPONENTS #:COMPONENT-APPLICABLE-P #:DEFINE-SYSTEM
-   #:FIND-SYSTEM #:FIND-COMPONENT #:TOPLEVEL-COMPONENT-OF
+   #:COMPONENT-OUTPUT-EXISTS-P  #:APPLICABLE-COMPONENTS #:COMPONENT-APPLICABLE-P #:define-SYSTEM
+   #:FIND-SYSTEM #:FIND-COMPONENT #:TOPLEVEL-COMPONENT-OF #:CHECK-SUPPORTED-P
 
    ;; ACCESSORS
    #:DIRECTORY-OF #:OUTPUT-PATHNAME-OF #:VERSION-OF #:KEYWORDS-OF #:COMPONENTS-OF #:ALL-FILES #:MD5SUM-OF
@@ -74,13 +74,13 @@
    #:LOAD-PATCHES #:CREATE-PATCH-MODULE #:PATCH
 
    ;; CONFIG FILE
-   #:*LOAD-CONFIG* #:LOAD-CONFIG #:CREATE-CONFIG-COMPONENT
+   #:*load-config* #:load-config #:create-config-component
 
    ;; PREFERNCES
-   #:PREFERENCE #:*LOAD-PREFERENCES*
+   #:preference #:*load-preferences*
 
    ;; MISC
-   #:RUN-SHELL-COMMAND #:IMPLEMENTATION #:OS #:PLATFORM #:NORMALIZE
+   #:RUN-SHELL-COMMAND #:implementation #:os #:platform
 
    ;; PROVIDER RELATED
    #:with-provider #:URL-OF #:provider 
@@ -93,7 +93,9 @@
                         (find-package "MOP")
                         (find-package "OPENMCL-MOP")
                         (error "Can't find suitable CLOS package.")))
-   :class-precedence-list))
+   :class-precedence-list :generic-function-methods :method-specializers :effective-slot-definition
+   :class-slots :slot-definition-type :slot-definition-name :slot-definition-initargs
+   :method-qualifiers))
 
 (in-package :mb.sysdef)
 
@@ -197,10 +199,12 @@ being loaded by register-sysdefs.")
 (defparameter *default-provider* ()
   "Bound to an instance of provider or NIL. Used as a default initarg for systems. ")
 
-(defvar *load-config* t)
+(defvar *load-config* t "When bound to a non-nil value, indicates that the config file for
+a system should be processed after loading a sytem. See the :config-file option in define-system")
 
 (defvar *bound-preferences* "Bound to the preferences of the system currently being loaded.")
-(defvar *load-preferences* t)
+(defvar *load-preferences* t "When bound to a non-nil will ensure that the preferences file
+for a system is made available during system load and compilation via the preference function.")
 
 
 
@@ -331,6 +335,20 @@ containing the whole rest of the given `string', if any."
 
 (eval-when  (:compile-toplevel :load-toplevel :execute)
   (defun implementation ()
+    "Returns a canonical symbol which can be used to identify a particular implementation.
+The values are as follows.
+Lispworks   :lispworks
+SBCL        :sbcl
+CMUCL       :cmucl
+CLISP       :clisp
+Allegro     :allegrocl
+ABCL        :abcl
+ECL         :ecl
+MCL         :mcl
+OPENMCL/CCL :openmcl
+If an implementation other than the ones mentioned above are used an error will be signalled.
+
+The result of invoking this function is made present on *features*"    
     #+lispworks :lispworks #+sbcl :sbcl #+cmu :cmucl #+clisp :clisp
     #+allegro :allegrocl #+abcl :abcl #+ecl :ecl #+gcl :gcl
     #+mcl :mcl  #+openmcl :openmcl
@@ -339,11 +357,29 @@ containing the whole rest of the given `string', if any."
 Please update the implementation function."))
 
   (defun os ()
+    "Returns a canonical symbol which can be used to identify the operating system upon which
+the Lisp image is running.
+The values are as follows.
+
+Microsoft Windows      :mswindows
+Linux                  :linux
+Mac                    :mac
+
+If running on an operating system other than the ones mentioned above NIL will be returned.
+The result of invoking this function is made present on *features*"
     #+(or :mswindows :windows) :mswindows
     #+(or :linux (and :clisp :unix)) :linux
     #+(or :macosx :darwin) :mac)
 
   (defun platform ()
+    "Returns a canonical symbol which can be used to identify the underlying architecture upon
+which the Lisp image is running.
+
+The currently understood values are as follows.
+
+:x86, :x86-64, :ppc, :hppa.
+
+The result of invoking this function is made present on *features*"
     #+(or :x86 :pc386 :i486) :x86
     #+(or :amd64 :x86-64 :x64) :x86-64
     #+(or :ppc :powerpc) :ppc
@@ -380,20 +416,44 @@ Please update the implementation function."))
    (version :accessor version-of :initform (first-version) :initarg :version)
    (patch-version :accessor patch-version-of :initform nil)
    (if-supports-fails :accessor if-supports-fails :initarg :if-supports-fails :initform :error
-                      :documentation "What action to take if a component is not supported.")
-   (pathname :accessor pathname-of :initarg :pathname :initform nil)
-   (output-pathname :accessor output-pathname-of :initarg :output-pathname :initform nil)))
+                      :documentation "<strong>:if-supports-fails</strong> <i>value</i>
+This sets the slot for component to VALUE, which can be the keyword :error or a symbol.
+When it is :error then if a component is not supported and attempt to perform a source-file-action
+upon the component is attempted a condition of type component-not-supported is signalled.
+When it is a non-nil symbol then the function designated by that symbol will be called with the
+component as an argument.")
+   (pathname :accessor pathname-of :initarg :pathname :initform nil
+             :documentation "<strong>:pathname</strong> <i>path</i>
+Sets the root pathname of the system to PATH. (See component-pathname for more info)")
+   (output-pathname :accessor output-pathname-of :initarg :output-pathname :initform nil
+                    :documentation "<strong>:output-pathname</strong> <i>pathname</i>
+This specifies the destination of the output when operating on a component.
+This is only meaningful for files and doesn't apply to modules or systems.
+The output-pathname option is primarly used to specify a specific file to which
+a lisp-file is compiled.")))
+
 
 
 (defclass MODULE (component)
   ((components :accessor components-of :initform () :initarg :components)
    (uses-macros-list :accessor uses-macros-from :initarg :uses-macros-from :initform nil)
-   (serial :accessor serialp :initarg :serial :initform t)
-   (directory :accessor directory-of :initarg :directory)
+   (serial :accessor serialp :initarg :serial :initform nil
+           :documentation "<strong>:serial</strong> <i>boolean</i>
+Specifying serial indicates that all components adding to the system will :REQUIRE the component
+before it. This is identical to the ASDF meaning of :serial.")
+   (directory :accessor directory-of :initarg :directory
+              :documentation "<strong>:directory</strong> <i>name</i>
+This specifies the directory where the source of system which will be reside. This directory is
+appended to the *systems-path*. If not specified it defaults to (string-downcase name-of-system).
+This option is defined on the module class and as such is available for modules as well.
+A value of NIL is also permissible and specifies that the pathname of the component will be the
+same as the pathname of the components parent (see .
+A List is permissible as well and is a way to indicate multiple directories in a portable manner.
+eg. (:directory (\"dir-1\" \"dir-2\"))")
    (default-component-class :accessor default-component-class-of :initform 'lisp-source-file
-                            :initarg :default-component-class)
-   (default-config-class :accessor default-config-class-of :initform 'config-file
-                             :initarg :default-config-class)))
+                            :initarg :default-component-class
+                            :documentation "<strong>:default-component-class</strong> <i>class-name</i>
+This specifies the default class for components of this system. The default is LISP-SOURCE-FILE.")))
 
 (defclass LAZY-MODULE (module) ())
 
@@ -405,15 +465,51 @@ Please update the implementation function."))
    (author :accessor author-of :initform "Unknown" :initarg :author)
    (license :accessor license-of :accessor licence-of :initform "Unknown"
             :initarg :licence :initarg :license)
-   (development :accessor development-mode :initform *default-development-mode* :initarg :development)
+   (development :accessor development-mode :initform *default-development-mode* :initarg :development
+                :documentation "<strong>:development</strong> <i>boolean</i>
+When set to a non nil value this indicates that the source of the system resides in the same location
+as the sysdef file that the system was defined in. This defaults to *default-development-mode* and
+can be bound by wildcard-searcher.")
    (keywords :accessor keywords-of :initarg :keywords :initform ())
-   (deprecated :accessor deprecatedp :initarg :deprecated :initform nil)
+   (deprecated :accessor deprecatedp :initarg :deprecated :initform nil
+               :documentation "<strong>:deprecated</strong> <i>name-or-t</i>
+Setting deprecated indicates that this system is depcrecated and a warning will be signalled
+when loading this system. if NAME-OR-T is a system name then that name will be recommended in
+the warning as a replacement.")
    (contact :accessor contact-of :initform "The Author" :initarg :contact)
-   (config :accessor config-file-of :initform nil :initarg :config-file)
+   (config :accessor config-file-of :initform nil :initarg :config-file
+           :documentation "<strong>:config-file</strong> <i>pathname</i>
+Config files are files which are loaded post system load to customize a systems behaviour.
+This can be controlled by the special variable *load-config*. The config file will only
+be loaded when necessary and utilizes the sysdef machinary to achieve this, this includes
+the creation of a config component \(the type of which can by customized using the :default-config-class
+option\) and is loaded by \(execute CONFIG-COMPONENT 'load-source-action\)")
    (config-component :accessor config-component-of :initform nil)
-   (preference-file :accessor preference-file-of :initform nil :initarg :preferences)
+   (preference-file :accessor preference-file-of :initform nil :initarg :preferences
+                    :documentation "<strong>:preferences</strong> <i>pathname</i>
+Preference files are files with contents of the form (keyword value)* and these
+preferences are made available during the compilation and loading of the system
+via the preference function, this can be useful when you need a value to be set
+during loading. Mudballs uses a ~/.mudballs.prefs file for this purpose to set
+the *fasl-output-root* variable with a :fasl-output-root preference.
+
+ie.  ~/.mudball.prefs can have the following value
+
+\(:fasl-output-root \"/tmp/\"\)
+
+and *fasl-output-root* is defined as (or (preference :fasl-output-root) ....))
+")
+   (default-config-class :accessor default-config-class-of :initform 'config-file
+                         :initarg :default-config-class
+                         :documentation "<strong>:default-config-class</strong> <i>class-name</i>
+This options specifies the default type of the component created for a systems config file.")   
    (provider :reader provider-of :initarg :provider :initform *default-provider*)
-   (md5sum :reader md5sum-of :initarg :md5sum :initform nil)))
+   (md5sum :reader md5sum-of :initarg :md5sum :initform nil
+           :documentation "<strong>:md5sum</strong> <i>string</i>
+This is used in conjunction with with-provider and is used to specify the md5sum of the
+download file for this system and will be checked when a system is installed.")))
+
+
 
 (defmethod print-object ((system component) stream)
   (let ((my-name (name-of system)))
@@ -451,12 +547,9 @@ Please update the implementation function."))
   (:documentation "Converts THING (a class designator) into an action")
   (:method ((action action) &rest initargs)
    (declare (ignore initargs))
-   action )
-  ;; we lookup the make-instance symbol each time here to prevent lispworks
-  ;; from optimizing away the make-instance call and thus losing possible
-  ;; methods on make-instance which causes autloading of action classes to fail.
+   action)
   (:method ((action symbol) &rest initargs)
-   (apply (find-symbol "MAKE-INSTANCE") action initargs))
+   (apply 'make-instance action initargs))
   (:method (action &rest initargs)
    (declare (ignore initargs))
    (error "Don't know how to coerce ~S into an action." action)))
@@ -646,22 +739,6 @@ them against component."))
   (assert (valid-initarg-p comp key) (key) "~S is an illegal DEFINE-SYSTEM option." key)
   (reinitialize-instance comp key (first data)))
 
-
-
-
-(defmacro define-option (key &optional docstring)
-  `(defmethod process-option ((comp component) (key (eql ,key)) &rest data)
-     ,@(when docstring (list docstring))
-     (reinitialize-instance comp ,key (first data))))
-
-
-
-
-
-
-
-
-
 ;; SUPPORTS
 (defgeneric check-supported-p (key &rest options)
   (:method ((key (eql :implementation)) &rest options)
@@ -693,6 +770,19 @@ them against component."))
           (supports-of component))))
 
 (defmethod process-option ((comp component) (key (eql :supports)) &rest data)
+  "<strong>:supports</strong> <i>supports-spec</i>
+This keyword is used to indicate which combination of OS/Implementation/Features
+must be present in order for the system to be loaded.
+Supports spec is of the following form (TYPE . VALUES*)
+which specifies that the supports TYPE must be a member of VALUES or a condition of type
+component-not-supported is signalled (this can be customized with the :if-supports-fails options).
+
+The following types are specified. <strong>:implementation</strong>, <strong>:os</strong>, <strong>:platform</strong>, <strong>:feature</strong>.
+
+Additionaly <strong>:and</strong>, <strong>:or</strong> and <strong>:not</strong> are allowed for more fine grained control.
+
+eg. (:supports (:and (:os :mswindows) (:implementation :lispworks)))
+See check-supported-p, os, implementation, platform"
   (setf (supports-of comp) data))
  
 (defun check-supports (comp action)
@@ -793,7 +883,24 @@ them against component."))
                  (t spec))))
     (normalize-spec)))
 
+
+
 (defmethod process-option ((system module) (key (eql :components)) &rest args)
+  "<strong>:components</strong> <i>component-spec</i>
+Adds all components specified by component spec to system.
+
+component-spec is a list of the form
+<tt>
+COMPONENT*
+COMPONENT =&gt; (name [type] [OPTIONS*))
+</tt>
+If only NAME is provied, ie the component spec is (NAME), then it may be simplified to NAME.
+This creates a component of type TYPE with a name of NAME, updates the component with OPTIONS
+and adds the component to the systems component list.
+
+examples
+ (:components \"packages\" \"macros\" \"functions\")
+ (:components \"packages\" (:contrib module (:components \"file1\")))"
   (setf (components-of system) nil) ; clear out components
   (dolist (file-spec args)
     (apply #'process-option system :component (mkspec file-spec))))
@@ -820,13 +927,25 @@ them against component."))
 
 ;;; These are options which, instead of only using the first value in DATA use
 ;;; the entire DATA list.
-(defmacro full-data-option (reader key)
+(defmacro full-data-option (reader key &optional doc)
   `(defmethod process-option ((thing component) (key (eql ,key)) &rest data)
+     ,@(when doc (list doc))
      (setf (,reader thing) data)))
 
-(full-data-option version-of :version)
-(full-data-option keywords-of :keywords)
-(full-data-option uses-macros-from :uses-macros-from)
+(full-data-option version-of :version
+                  "<strong>:version</strong> <i>version-numbers*</i>
+This sets the version of the system, if not supplied it default to (0 0 1).
+Versions are specified as a list of numbers eg.
+\(:version 0 1 2)")
+
+(full-data-option keywords-of :keywords "<strong>:keywords</strong> <i>keywords*</i>
+This adds various keywords to the system which are used when mb:search'ing through systems.")
+
+(full-data-option uses-macros-from :uses-macros-from "<strong>:uses-macros-from</strong> <i>names*</i>
+This indicates that the system uses macros (or inline functions) from the systems named by NAMES.
+The result is that all operations upon the system or uses-macros-from dependencies will cause
+the system to be recompiled.")
+
 
 ;; Development Mode
 ;; We need to make sure that we remove the trailing (fasl-path) folders from the load-pathname since
@@ -1392,16 +1511,51 @@ and have a last compile time which is greater than the last compile time of COMP
 
 
 
-(defmethod documentation ((name (eql 'define-system)) (key (eql 'function)))
-  (format nil "~a" (call-next-method)
-          (possible-define-system-options)))
+
+(defun eql-specializer-p (specializer)
+  (and (consp specializer) (eql (car specializer) 'eql)))
+
+(defun specialized-options (methods)
+  (loop :for method :in methods
+        :for key-specializer = (second (method-specializers method))
+        :when (eql-specializer-p key-specializer) :collect (second key-specializer)))
+
+
+(defgeneric specialized-option (thing)
+  (:method ((thing effective-slot-definition))
+   (copy-list (slot-definition-initargs thing)))
+  (:method ((thing standard-method))
+   (specialized-options (list thing))))
+
+(defvar *do-not-document*
+  '(:contact :author :maintainer :licence :license :contact :documentation :name :component :parent :provider))
 
 (defun possible-define-system-options ()
   "this is a helper method which creates some html text from slots and
 process-option methods to create a guaranteed up to date option list
 for define-system. This has only been tested with Lispworks at the moment. Sorry :("
-  ""
-  )
+  (flet ((initargable-slots ()
+           "Returns all slots for the system class which can be set with an initarg"
+           (remove-if-not 'slot-definition-initargs (class-slots (find-class 'system)))))
+    (let* ((methods (remove-if 'method-qualifiers (generic-function-methods #'process-option)))
+           (method-keys (specialized-options methods))
+           (slots (remove-if #'(lambda (slot) (intersection (slot-definition-initargs slot) method-keys))
+                             (initargable-slots)))
+           (to-document (nconc slots methods)))
+      (let ((documented (remove-if-not (lambda (x) (documentation x t)) to-document)))
+        (values (format nil "<strong>Possible Options:</strong>~%~{~@[~&~%~A~^~%~]~}" (mapcar (lambda (x) (documentation x t)) documented))
+                (set-difference (mapcan 'specialized-option (set-difference to-document documented))
+                                *do-not-document*))))))
+
+
+(defmethod documentation ((name (eql 'define-system)) (key (eql 'function)))
+  (multiple-value-bind (documented undocumented) (possible-define-system-options)
+    (with-output-to-string (outs)
+      (princ (call-next-method) outs)
+      (princ documented outs)
+      (when undocumented
+        (format outs "~&~%The following options are not currently documented;~%~{~S~^, ~}" undocumented)))))
+
 
 ;;; SYSTEM CREATION AND LOCATION
 (defmacro define-system (name (&optional (class 'system)) &body options)
@@ -1418,75 +1572,13 @@ OPTIONS are processed using process-options.
 
 Systems are unique on a name (tested using string-equal), version basis.
 
-<strong>Available Options:</strong>
-
-<strong>:pathname</strong> <i>path</i>
-Sets the root pathname of the system to PATH. (See component-pathname for more info)
-
-<strong>:default-component-class</strong> <i>class-name</i>
-This specifies the default class for components of this system. The default is LISP-SOURCE-FILE.
-
-<strong>:version</strong> <i>&rest version-numbers</i>
-This sets the version of the system, if not supplied it default to (0 0 1).
-Versions are specified as a list of numbers eg.
-\(:version 0 1 2)
-
-<strong>:deprecated</strong> <i>name-or-t</i>
-Setting deprecated indicates that this system is depcrecated and a warning will be signalled
-when loading this system. if NAME-OR-T is a system name then that name will be recommended in
-the warning as a replacement.
-
-<strong>:serial</strong> <i>boolean</i>
-Specifying serial indicates that all components adding to the system will :REQUIRE the component
-before it. This is identical to the ASDF meaning of :serial.
-
-<strong>:directory</strong> <i>name</i>
-This specifies the directory where the source of system which will be reside. This directory is
-appended to the *systems-path*. If not specified it defaults to (string-downcase name-of-system).
-This option is defined on the module class and as such is available for modules as well.
-A value of NIL is also permissible and specifies that the pathname of the component will be the
-same as the pathname of the components parent (see .
-A List is permissible as well and is a way to indicate multiple directories in a portable manner.
-eg. (:directory (\"dir-1\" \"dir-2\"))
-
-<strong>:components</strong> <i>component-spec</i>
-Adds all components specified by component spec to system.
-
-component-spec is a list of the form
-<tt>
-COMPONENT*
-COMPONENT =&gt; (name [type] [OPTIONS*))
-</tt>
-If only NAME is provied, ie the component spec is (NAME), then it may be simplified to NAME.
-This creates a component of type TYPE with a name of NAME, updates the component with OPTIONS
-and adds the component to the systems component list.
-
-eg. (:components \"packages\" \"macros\" \"functions\")
-
-
-The following options sets a slot on the system (using reinitialize-instance) and are generally used for
-information purposes only
-<strong>:contact, :author, :maintainer, :licence, :license, :contact, :documentation</strong>
-
-
-<strong>The following options are currently undocumented.</strong>
-:config-file
-:development
-:output-pathname
-:preferences
-:default-config-class
-:if-supports-fails
-:uses-macros-from
-:keywords
-:requires
-:needs
-:supports
 "
   (if (multiple-version-definitions-p options)
       `(progn
          ,@(expand-multiple-versions name class options))
       `(fn-define-system ',name ',class nil ',options)))
 
+ 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   ;; We need these function present at compile time
 
@@ -1904,16 +1996,22 @@ loaded by functions on *custom-search-modules*."
   (and (config-file-of sys) (probe-file (config-file-of sys))))
 
 (defgeneric load-config (system)
+  (:documentation "Loads the configuration file for SYSTEM.")
   (:method :around ((sys system))
    (when (and *load-config* (config-file-exists-p sys))
      (call-next-method)))
   (:method ((sys system))
+   "The default method ensures that a configuration component is present by invoking create-config-component,
+saves the component on the system and loads it using execute and load-source-action"
    (let ((component (orf (config-component-of sys)
                          (create-config-component sys))))
      (execute component 'load-source-action))))
 
 (defgeneric create-config-component (system)
+  (:documentation "Creates config component for system.")
   (:method ((system system))
+   "The default method creates a config component using the default-config-class (see options in define-system)
+of the system and specifies the pathname of the component as the pathname specified by the :config-file option."
    (let ((path (config-file-of system)))
      (create-component system (pathname-name path)
                        (default-config-class-of system)
@@ -1943,6 +2041,22 @@ loaded by functions on *custom-search-modules*."
        (contents-of input)))))
 
 (defun preference (name)
+  "Returns the preference named NAME. This function only returns a meaningful value when
+called in the context of a system load where the system has as :preference option set (see define-system).
+
+Preference files are of the form
+(KEYWORD VALUE)*
+
+Example
+A file (\"/tmp/config\") containing (:fasl-output-path \"/tmp/\")
+
+A system (define-system :test () (:components \"test-file\") (:preferences \"/tmp/config\"))
+
+and in test file a form (defvar *output-path* (or (sysdef:preference :fasl-output-path) \"/tmp/\"))
+
+
+This will set the *output-path* variable to \"/tmp/\"
+"
   (declare (symbol name))
   (cadr (assoc name *bound-preferences* :test 'string-equal)))
 
@@ -2012,7 +2126,7 @@ typically using define-system, will have a provider with a url of URL."
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :allegrocl :abcl :ecl :openmcl))
   (:contact "sross@common-lisp.net")
-  (:version 0 1)
+  (:version 0 1 2) 
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "mb"))
