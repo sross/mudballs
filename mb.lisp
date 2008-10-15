@@ -1489,7 +1489,7 @@ and have a last compile time which is greater than the last compile time of COMP
   component)
 
 ; Compile Action
-(defmethod execute :around ((sys system) (action source-file-action))
+(defmethod execute :around ((sys system) (action compile-action))
   (with-compilation-unit ()
     (call-next-method)))
 
