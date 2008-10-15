@@ -800,8 +800,7 @@ eg. (:supports (:and (:os :mswindows) (:implementation :lispworks)))
 See check-supported-p, os, implementation, platform"
   (setf (supports-of comp) data))
  
-(defun check-supports (comp action)
-  (declare (ignore action))
+(defun check-supports (comp)
   (if (supportedp comp)
       t
       (let ((if-fails (if-supports-fails comp)))
@@ -2142,7 +2141,7 @@ typically using define-system, will have a provider with a url of URL."
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :allegrocl :abcl :ecl :openmcl))
   (:contact "sross@common-lisp.net")
-  (:version 0 1 2) 
+  (:version 0 1 3) 
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "mb"))
