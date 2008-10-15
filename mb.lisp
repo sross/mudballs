@@ -780,9 +780,20 @@ them against component."))
   (:documentation "Returns true if component is supported.")
   (:method ((component component))
    "The default method on COMPONENT runs check-supported-p on the entries of the support slot." 
-   (every #'(lambda (supports)
-              (apply #'check-supported-p supports))
-          (supports-of component))))
+   (if (every #'(lambda (supports)
+                  (apply #'check-supported-p supports))
+              (supports-of component))
+       t
+       (supports-fails component))))
+
+(defmethod supports-fails ((comp component))
+  (let ((if-fails (if-supports-fails comp)))
+    (cond ((eql if-fails :error)
+           (restart-case (error 'component-not-supported :component comp)
+             (continue () :report "Ignore the failure and continue."
+               t)))
+          ((and if-fails (symbolp if-fails)) (funcall if-fails comp))
+          (t (error "~S is an invalid option for :IF-SUPPORTS-FAILS." if-fails)))))
 
 (defmethod process-option ((comp component) (key (eql :supports)) &rest data)
   "<strong>:supports</strong> <i>supports-spec</i>
@@ -800,18 +811,6 @@ eg. (:supports (:and (:os :mswindows) (:implementation :lispworks)))
 See check-supported-p, os, implementation, platform"
   (setf (supports-of comp) data))
  
-(defun check-supports (comp)
-  (if (supportedp comp)
-      t
-      (let ((if-fails (if-supports-fails comp)))
-        (cond ((eql if-fails :error)
-               (restart-case (error 'component-not-supported :component comp)
-                 (continue () :report "Ignore the failure and continue."
-                   t)))
-              ((and if-fails (symbolp if-fails)) (funcall if-fails comp))
-              (t (error "~S is an invalid option for :IF-SUPPORTS-FAILS." if-fails))))))
-
-
 ;; NEEDS & REQUIRES OPTION 
 ;; Needs definitions are ultimately of the form (match-action component-name [action-to-take])*
 ;; and are converted into a list of dependency objects.
@@ -1384,7 +1383,7 @@ and have a last compile time which is greater than the last compile time of COMP
       (install () :report "Install" (execute system 'install-action)))))
 
 (defmethod execute :before ((component component) (action action))
-  (when (check-supports component action)
+  (when (supportedp component)
     (loop for (dep-action . dep-component) in (dependencies-of action component) :do
           (execute dep-component dep-action))))
 
@@ -2141,7 +2140,7 @@ typically using define-system, will have a provider with a url of URL."
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :allegrocl :abcl :ecl :openmcl))
   (:contact "sross@common-lisp.net")
-  (:version 0 1 3) 
+  (:version 0 1 4) 
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "mb"))
