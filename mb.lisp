@@ -123,7 +123,7 @@ descending into PARENT-SYSTEM-NAME's components using MODULE-NAMES."
 (defvar *info-io* *debug-io* "*info-io* intended to be bound to an output stream where information messages will be sent.
 Eg. On CLEAN-ACTION, when a file is actually deleted a message will be printed to *info-io*")
 
-(defvar *compile-fails-behaviour* #+sbcl :error #-sbcl :warning
+(defvar *compile-fails-behaviour* :warning
   "This describe the behaviour to take when compiling a file fails.
 When NIL then the error is ignored, when :WARNING then a WARNING is signalled
 and when :ERROR an error of type COMPILE-FAILED is signalled.")
