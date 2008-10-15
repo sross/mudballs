@@ -579,7 +579,20 @@ a list created by extracting SLOT-NAMES from form."
     (assert-true (handler-case (define-test-system :new-system () ())
                    (condition (c) nil)
                    (:no-error (val) t)))))
-  
+
+
+(define-test custom-method-combination-test
+  (with-test-systems ()
+    (let ((sys (define-system :around-test () ())))
+      (defmethod execute :around ((sys (eql sys)) (action load-action))
+        (throw 'lisp-around t))
+      (assert-true (catch 'lisp-around (execute sys 'load-action) nil))
+      
+      (defmethod execute around ((sys (eql sys)) (action load-action))
+        (throw 'sysdef-around t))
+      (assert-true (catch 'sysdef-around (execute sys 'load-action) nil)))))
+
+
 ;(mb:test :mb.sysdef)
                      
 (princ (run-tests))

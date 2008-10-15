@@ -1,4 +1,4 @@
-;;; -*- Mode: LISP; Syntax: COMMON-LISP; Package: CL-USER; Base: 10 -*-
+
 ;;; Copyright (c) 2006-2008, Sean Ross.  All rights reserved.
 ;;; Redistribution and use in source and binary forms, with or without
 ;;; modification, are permitted provided that the following conditions
@@ -257,6 +257,35 @@ output to *VERBOSE-OUT*.  Returns the shell's exit code."
     #-(or openmcl clisp lispworks allegro scl cmu sbcl ecl)
     (error "RUN-SHELL-PROGRAM not implemented for this Lisp")
     ))
+
+;;; From Christophe Rhodes post on cclan-list
+(define-method-combination standard-sysdef-method-combination ()
+  ((around-sysdef (around))
+   (around (:around))
+   (before (:before))
+   (primary () :required t)
+   (after (:after)))
+  (flet ((call-methods (methods)
+           (mapcar #'(lambda (method)
+                       `(call-method ,method))
+                   methods)))
+    (let* ((form (if (or before after (rest primary))
+                     `(multiple-value-prog1
+                          (progn ,@(call-methods before)
+                            (call-method ,(first primary)
+                                         ,(rest primary)))
+                        ,@(call-methods (reverse after)))
+                     `(call-method ,(first primary))))
+           (standard-form (if around
+                              `(call-method ,(first around)
+                                            (,@(rest around)
+                                             (make-method ,form)))
+                              form)))
+      (if around-sysdef
+          `(call-method ,(first around-sysdef)
+                        (,@(rest around-sysdef) (make-method ,standard-form)))
+          standard-form))))
+
 
 (defun without-leading (item list &key (test 'eql))
   "Returns LIST without any leading ITEM's."
@@ -694,6 +723,7 @@ them against component."))
 
 
 (defgeneric execute (system action)
+  (:method-combination standard-sysdef-method-combination)
   (:documentation "The private exection method, this will NOT create a new context when running action.")
   (:method (system action)
    (error "The required method EXECUTE is not implemented for ~S and ~S." system action))
@@ -1225,10 +1255,11 @@ the system to be recompiled.")
 
 ;; Actions Are Only Applicable if they are NOT out of date.
 (defgeneric out-of-date-p (component action)
+  (:method-combination standard-sysdef-method-combination)
   (:documentation "Returns true if applying ACTION to COMPONENT is necessary.")
   (:method ((component t) (action t))
    (error "The required method OUT-OF-DATE-P is not implemented for ~S and ~S ." component action))
-  (:method :around ((component component) (action action))
+  (:method around ((component component) (action action))
    (if (forcep action)
        t
        (call-next-method)))
@@ -1354,13 +1385,13 @@ and have a last compile time which is greater than the last compile time of COMP
 (defun add-processed-action (component action)
   (acons (cons component (class-of action)) t *processed-actions*))
 
-(defmethod execute :around ((component component) (action action))
+(defmethod execute around ((component component) (action action))
   (labels ((process-action ()
              (cond ((already-processed-p component action) t)
                    (t (prog1
                           (setf *processed-actions*
                                 (add-processed-action component action))
-                          (when (out-of-date-p component action) (call-next-method))))))
+                        (when (out-of-date-p component action) (call-next-method))))))
            (process-with-bound-var ()
              (if *processed-actions*
                  (process-action)
@@ -1451,7 +1482,7 @@ and have a last compile time which is greater than the last compile time of COMP
 (defmethod execute :before ((comp lisp-source-file) (action source-file-action))
   (ensure-output-path-exists comp))
 
-(defmethod execute :around ((file lisp-source-file) (action load-action))
+(defmethod execute around ((file lisp-source-file) (action load-action))
   (handler-bind ((fasl-error (ecase *load-fails-behaviour*
                                (:error (constantly nil))
                                (:compile (make-restarter 'compile-system))
@@ -1489,7 +1520,7 @@ and have a last compile time which is greater than the last compile time of COMP
   component)
 
 ; Compile Action
-(defmethod execute :around ((sys system) (action compile-action))
+(defmethod execute around ((sys system) (action compile-action))
   (with-compilation-unit ()
     (call-next-method)))
 
@@ -2074,7 +2105,7 @@ This will set the *output-path* variable to \"/tmp/\"
   (declare (symbol name))
   (cadr (assoc name *bound-preferences* :test 'string-equal)))
 
-(defmethod execute :around ((system system) (action source-file-action))
+(defmethod execute around ((system system) (action source-file-action))
   (let ((*bound-preferences* (preferences-of system)))
     (call-next-method)))
 
@@ -2140,7 +2171,7 @@ typically using define-system, will have a provider with a url of URL."
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :allegrocl :abcl :ecl :openmcl))
   (:contact "sross@common-lisp.net")
-  (:version 0 1 4) 
+  (:version 0 1 5) 
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "mb"))
