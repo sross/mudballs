@@ -62,7 +62,7 @@
    ;; CONDITIONS
    #:SYSDEF-CONDITION #:SYSDEF-ERROR #:SYSDEF-WARNING #:NO-SUCH-COMPONENT #:COMPONENT-NOT-SUPPORTED
    #:COMPONENT-NOT-PRESENT #:DEPRECATED-SYSTEM #:FASL-ERROR #:FASL-OUT-OF-DATE #:FASL-DOES-NOT-EXIST
-   #:COMPILATION-ERROR #:COMPILE-FAILED #:COMPILE-WARNED #:DUPLICATE-COMPONENT
+   #:COMPILATION-ERROR #:COMPILE-FAILED #:COMPILE-WARNED #:DUPLICATE-COMPONENT #:SYSTEM-REDEFINED
 
    ;; SYSTEM DEFINITION
    #:REGISTER-SYSDEFS
@@ -669,6 +669,12 @@ download file for this system and will be checked when a system is installed."))
    (name :accessor name-of :initarg :name))
   (:report (lambda (c s)
              (format s "Duplicate components named ~S in system ~S." (name-of c) (system-of c)))))
+
+(define-condition system-redefined (warning sysdef-condition)
+  ((name :initarg :name :accessor name-of)
+   (version :initform nil :initarg :version :accessor version-of))
+  (:report (lambda (c s)
+             (format s "Redefining ~A version ~A." (name-of c) (version-of c)))))
 
 
 ;;;; CORE EXECUTION PROTOCOL
@@ -1631,7 +1637,6 @@ Systems are unique on a name (tested using string-equal), version basis.
   (typep name 'subsystem-definition))
 
 
-
 (defun find-system-for (name-list version)
   "Takes a list of (system-name modules* new-module) and finds the appropriate
 module to be the parent of new-module with version VERSION."
@@ -1644,10 +1649,11 @@ module to be the parent of new-module with version VERSION."
   #'(lambda (sys) (list (name-of sys) (version-of sys))))
 
 (defun register-system (system)
+  (when-let (current-system (find (funcall (system-key) system) *systems* :test 'equalp :key (system-key)))
+    (warn 'system-redefined :name (name-of system) :version (version-string system)))
   (setf *systems* (delete (funcall (system-key) system) *systems* :test #'equalp :key (system-key)))
   (pushnew system *systems* :test #'equalp :key (system-key))
   system)
-
 
 ;; Unlike ASDF we do not reuse our objects when redefining systems.
 ;; Explanation.....

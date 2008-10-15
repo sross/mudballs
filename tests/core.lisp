@@ -430,9 +430,9 @@ a list created by extracting SLOT-NAMES from form."
 (define-test not-supported-tests
   (with-test-systems ()
     (dflet ((os () :mswindows))
-      (let ((sys1 (define-test-system :test () (:supports (:os :linux))))
-            (sys2 (define-test-system :test () (:supports (:os :linux)) (:if-supports-fails nil)))
-            (sys3 (define-test-system :test () (:supports (:os :linux)) (:if-supports-fails signal-test-condition))))
+      (let ((sys1 (define-test-system :test-a () (:supports (:os :linux))))
+            (sys2 (define-test-system :test-b () (:supports (:os :linux)) (:if-supports-fails nil)))
+            (sys3 (define-test-system :test-c () (:supports (:os :linux)) (:if-supports-fails signal-test-condition))))
         (assert-error 'component-not-supported (perform sys1 'load-action))
         (assert-error 'error (assert-false (perform sys2 'load-action)))
         (block nil
@@ -477,7 +477,7 @@ a list created by extracting SLOT-NAMES from form."
                    (:config-file "core.lisp"))))
         (assert-prints "exec" (load-config sys))
         (assert-prints ""  (load-config sys)))
-      (let ((sys (define-test-system :pref-sys ()
+      (let ((sys (define-test-system :pref-sys2 ()
                    (:default-config-class test-config-file)
                    (:config-file "core.lisp")))
             (*load-config* nil))
@@ -525,10 +525,11 @@ a list created by extracting SLOT-NAMES from form."
   (with-test-systems ()
     (define-test-system :foo () (:components "foo"))
     (assert= 1 (length (components-of (find-system :foo))))
-    (define-test-system :foo () (:components "foo" "bar"))
+    (handler-bind ((system-redefined #'muffle-warning)) 
+      (define-test-system :foo () (:components "foo" "bar")))
     (assert= 2 (length (components-of (find-system :foo))))))
 
-(define-test name-test ()
+(define-test name-test
   (with-test-systems ()
     (assert-eql (find-system :test) (find-system "test"))
     (assert-eql  (find-system "test") (find-system "TEST"))
@@ -540,7 +541,6 @@ a list created by extracting SLOT-NAMES from form."
     (assert-true (typep 'foo 'system-name))
     (assert-true (typep :foo 'system-name))
     (assert-false (typep "foo" 'system-name))))
-
 
 (define-test doc-test ()
   (with-test-systems ()
@@ -555,13 +555,13 @@ a list created by extracting SLOT-NAMES from form."
 (defmethod out-of-date-p ((file out-of-date-file) (action action))
   nil)
 
-(define-test force-test ()
+(define-test force-test 
   (let ((comp (create-component nil "test" 'out-of-date-file)))
     (assert-false (out-of-date-p comp (make-instance 'load-action)))
     (assert-true (out-of-date-p comp (make-instance 'load-action :force t)))))
 
 
-(define-test multiple-directory-module ()
+(define-test multiple-directory-module
   (with-test-systems ()
     (let ((sys (define-test-system :multi-dir-test ()
                  (:components (:foo module
@@ -572,6 +572,14 @@ a list created by extracting SLOT-NAMES from form."
       (assert-equal (namestring (make-pathname :directory '(:relative "dir1" "dir2")))
                     (enough-namestring (component-pathname (find-component sys :foo))
                                        (component-pathname sys))))))
+
+(define-test system-redefined-test
+  (with-test-systems ()
+    (assert-error 'system-redefined (define-test-system :test () ()))
+    (assert-true (handler-case (define-test-system :new-system () ())
+                   (condition (c) nil)
+                   (:no-error (val) t)))))
+  
 ;(mb:test :mb.sysdef)
                      
 (princ (run-tests))
