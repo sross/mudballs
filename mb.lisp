@@ -625,7 +625,7 @@ download file for this system and will be checked when a system is installed."))
   (:report (lambda (c s)
              (format s "Component ~A does not exist.~%" (input-file (component-of c))))))
 
-(define-condition system-not-intalled (sysdef-error)
+(define-condition system-not-installed (sysdef-error)
   ((system :reader system-of :initarg :system))
   (:report (lambda (c s)
              (format s "System ~A is not installed.~%" (system-of c)))))
@@ -1366,7 +1366,7 @@ and have a last compile time which is greater than the last compile time of COMP
 ;;; TODO: From here add :before test on system file-action  to make sure component-is-present
 (defmethod execute :before ((system system) (action file-action))
   (unless (component-exists-p system)
-    (restart-case (error 'system-not-intalled :system system)
+    (restart-case (error 'system-not-installed :system system)
       (install () :report "Install" (execute system 'install-action)))))
 
 (defmethod execute :before ((component component) (action action))
@@ -2089,7 +2089,7 @@ This will set the *output-path* variable to \"/tmp/\"
   (:documentation "The PROVIDER class abstracts the location
 from which systems may be downloaded from. Systems with a bound provider slot
 \(accessible using provider-of) typically indicates that a system has been
-defined in the context of a with-provider macro and may be installed automactically."))
+defined in the context of a with-provider macro and may be installed automatically."))
 
 (defun register-provider (url &key contact)
   (orf (gethash url *registered-providers*)
