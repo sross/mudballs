@@ -740,6 +740,16 @@ them against component."))
   (reinitialize-instance comp key (first data)))
 
 ;; SUPPORTS
+(defgeneric featurep (feature)
+  (:method ((feature symbol))
+   (find feature *features*))
+  (:method ((feature cons))
+   (let ((dispatch (first feature)))
+     (ecase dispatch
+       (:and (every 'featurep (rest feature)))
+       (:or (some 'featurep (rest feature)))
+       (:not (not (featurep (second feature))))))))
+
 (defgeneric check-supported-p (key &rest options)
   (:method ((key (eql :implementation)) &rest options)
    (find (implementation) options))
@@ -748,8 +758,7 @@ them against component."))
   (:method ((key (eql :os)) &rest options)
    (find (os) options))
   (:method ((key (eql :feature)) &rest options)
-   (every #'(lambda (feature) (find feature *features*))
-          options))
+   (every 'featurep options))
   (:method ((key (eql :not)) &rest options)
    (not (apply #'check-supported-p (first options))))
   (:method ((key (eql :and)) &rest options)
@@ -1832,6 +1841,8 @@ but version ~A is already loaded." (version-string system) (name-of system)
    (ordered :accessor ordered-of :initarg :ordered :initform nil)
    (cached-components :accessor cached-components-of :initform nil)))
 
+
+;; This could all do with some cleaning up..
 (defvar *special-directory-keywords* '(:wild :wild-inferiors :back :up))
 
 
@@ -1848,7 +1859,6 @@ but version ~A is already loaded." (version-string system) (name-of system)
         (merge-pathnames (make-pathname :directory (butlast (pathname-directory next)))
                          next)
         next)))
-
 
 (defgeneric wildcard-pathname-of (module)
   (:method ((module module))
