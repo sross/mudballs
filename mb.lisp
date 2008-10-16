@@ -380,8 +380,8 @@ If an implementation other than the ones mentioned above are used an error will 
 The result of invoking this function is made present on *features*"    
     #+lispworks :lispworks #+sbcl :sbcl #+cmu :cmucl #+clisp :clisp
     #+allegro :allegrocl #+abcl :abcl #+ecl :ecl #+gcl :gcl
-    #+mcl :mcl  #+openmcl :openmcl
-    #-(or lispworks sbcl cmu clisp allegro abcl ecl gcl mcl openmcl)
+    #+mcl :mcl  #+openmcl :openmcl #+scl :scl
+    #-(or lispworks sbcl cmu clisp allegro abcl ecl gcl mcl openmcl scl)
     (error "We don't know what this implementation is.
 Please update the implementation function."))
 
@@ -2169,9 +2169,9 @@ typically using define-system, will have a provider with a url of URL."
 ;; And now we create ourself as a system
 (define-system :mb.sysdef ()
   (:author "Sean Ross")
-  (:supports (:implementation :lispworks :sbcl :cmucl :clisp :allegrocl :abcl :ecl :openmcl))
+  (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl))
   (:contact "sross@common-lisp.net")
-  (:version 0 1 5) 
+  (:version 0 1 7) 
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "mb"))
