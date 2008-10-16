@@ -533,7 +533,7 @@ a list created by extracting SLOT-NAMES from form."
   (with-test-systems ()
     (assert-eql (find-system :test) (find-system "test"))
     (assert-eql  (find-system "test") (find-system "TEST"))
-    (assert-error 'error (define-test-system "Foo" () ()))
+    (assert-error 'error (eval '(define-test-system "Foo" () ())))
     (assert-true (typep "foo" 'system-designator))
     (assert-true (typep 'foo 'system-designator))
     (assert-true (typep :foo 'system-designator))
