@@ -87,11 +87,11 @@
    )
 
   (:import-from  #.(package-name 
-                    (or (find-package "CLOS")
-                        (find-package "PCL")
-                        (find-package "SB-PCL")
-                        (find-package "MOP")
-                        (find-package "OPENMCL-MOP")
+                    (or (find-package :clos)
+                        (find-package :pcl)
+                        (find-package :sb-pcl)
+                        (find-package :mop)
+                        (find-package :openmcl-mop)
                         (error "Can't find suitable CLOS package.")))
    :class-precedence-list :generic-function-methods :method-specializers :effective-slot-definition
    :class-slots :slot-definition-type :slot-definition-name :slot-definition-initargs
@@ -120,7 +120,7 @@ descending into PARENT-SYSTEM-NAME's components using MODULE-NAMES."
          (type (or null pathname) *fasl-output-root*)
          (list *finders* *custom-search-modules*))
 
-(defvar *info-io* *debug-io* "*info-io* intended to be bound to an output stream where information messages will be sent.
+(defvar *info-io* *standard-output* "*info-io* intended to be bound to an output stream where information messages will be sent.
 Eg. On CLEAN-ACTION, when a file is actually deleted a message will be printed to *info-io*")
 
 (defvar *compile-fails-behaviour* :warning
@@ -526,8 +526,7 @@ ie.  ~/.mudball.prefs can have the following value
 
 \(:fasl-output-root \"/tmp/\"\)
 
-and *fasl-output-root* is defined as (or (preference :fasl-output-root) ....))
-")
+and *fasl-output-root* is defined as (or (preference :fasl-output-root) ....))")
    (default-config-class :accessor default-config-class-of :initform 'config-file
                          :initarg :default-config-class
                          :documentation "<strong>:default-config-class</strong> <i>class-name</i>
@@ -2169,7 +2168,7 @@ typically using define-system, will have a provider with a url of URL."
 ;; And now we create ourself as a system
 (define-system :mb.sysdef ()
   (:author "Sean Ross")
-  (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl))
+  (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
   (:version 0 1 7) 
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
