@@ -1,4 +1,4 @@
-
+;;; -*- Mode: LISP; Syntax: COMMON-LISP; Package: CL-USER; Base: 10 -*-
 ;;; Copyright (c) 2006-2008, Sean Ross.  All rights reserved.
 ;;; Redistribution and use in source and binary forms, with or without
 ;;; modification, are permitted provided that the following conditions
@@ -840,7 +840,7 @@ eg. (:supports (:and (:os :mswindows) (:implementation :lispworks)))
 See check-supported-p, os, implementation, platform"
   (setf (supports-of comp) data))
  
-;; NEEDS & REQUIRES OPTION 
+;; NEEDS, REQUIRES AND USES-MACROS-FROM OPTION 
 ;; Needs definitions are ultimately of the form (match-action component-name [action-to-take])*
 ;; and are converted into a list of dependency objects.
 ;; Match action is used to determine wether the dependency is applicable, and is done in the
@@ -876,6 +876,10 @@ See check-supported-p, os, implementation, platform"
         (t (error "Invalid spec ~S." spec)))
   (list match comp consequent))
 
+(defun dependency-name (list)
+  "Returns the name of the dependency from dependency list LIST."
+  (second list))
+
 (defun make-dependency-spec (spec)
   (destructuring-bind (match comp consequent) (make-dependency-list spec)
     (make-instance 'dependency :match-action match
@@ -888,20 +892,27 @@ See check-supported-p, os, implementation, platform"
        (eql (second spec) :version)
        (version-spec-p (third spec))))
 
-
-;; :REQUIRES is specially provided to handle the common case where you want both
-;; (:needs (action DEPENDENCY))
-;; and (:needs #1#=(load-action DEPENDENCY compile-action))
-;; The syntax for :REQUIRES is identical to :NEEDS but it will always add on
-;; the #1 dependency
-(defmethod process-option ((comp component) (key (eql :requires)) &rest data)
-  ;; pass on to needs
-  (apply 'process-option comp :needs data)
-  ;; and add the compiled -> load dependency for each component
+(defmethod process-option ((module module) (key (eql :uses-macros-from)) &rest data)
+  "<strong>:uses-macros-from</strong> <i>dependency-spec*</i>
+:uses-macros-from is a special form of :needs and indicates that, not only does the system
+have the indicated dependencies (which are specified in the same manner as :needs),
+but that if any dependent system has been modified more recently since the systems
+last compilation that the system should be recompiled. This is to ensure that any
+changes in macros/inline-functions etc. are updated in systems which specify
+dependencies using :uses-macros-from. This option is only used on modules and systems."
+  (apply 'process-option module :needs data)
+  ;; and add the name of the dependent systems to the uses-macros-from list
   (dolist (dep data)
-    (let ((dep-comp (second (make-dependency-list dep))))
-      (process-option comp :needs (list 'compile-action dep-comp 'load-action)))))
+    (push (dependency-name (make-dependency-list dep))
+          (uses-macros-from module))))
 
+
+;; Requires is the same as :needs historically it was used to handle a common
+;; case where you want to depend on a system but also to require a
+;; 'Load depends on Compile' dependency. This as superseded by action-dependencies
+(defmethod process-option ((comp component) (key (eql :requires)) &rest data)
+  (warn ":REQUIRES is deprecated. Please use :needs.")
+  (apply 'process-option comp :needs data))
 
 
 ;; :COMPONENTS OPTION
@@ -962,7 +973,7 @@ examples
     (let ((comp (create-component system name type args)))
       (when (serialp system)
         (when-let (previous-comp (car (last (components-of system))))
-          (process-option comp :requires (name-of previous-comp))))
+          (process-option comp :needs (name-of previous-comp))))
       (add-component-to comp system)
       comp)))
 
@@ -982,11 +993,6 @@ Versions are specified as a list of numbers eg.
 
 (full-data-option keywords-of :keywords "<strong>:keywords</strong> <i>keywords*</i>
 This adds various keywords to the system which are used when mb:search'ing through systems.")
-
-(full-data-option uses-macros-from :uses-macros-from "<strong>:uses-macros-from</strong> <i>names*</i>
-This indicates that the system uses macros (or inline functions) from the systems named by NAMES.
-The result is that all operations upon the system or uses-macros-from dependencies will cause
-the system to be recompiled.")
 
 
 ;; Development Mode
@@ -1367,11 +1373,15 @@ and have a last compile time which is greater than the last compile time of COMP
   (:method ((component system) (action install-action)) nil))
 
 (defgeneric action-dependencies (action component)
+  (:method ((action action) (component module))
+   nil)
   (:method ((action action) (component component))
    (loop for dep-action in (needs-of action)
          collect (cons (make-instance dep-action) component))))
 
 (defgeneric dependencies-of (action comp)
+  (:method ((action symbol) component)
+   (dependencies-of (make-instance action) component))
   (:method ((action action) (comp component))
    (append (action-dependencies action comp) (component-dependencies comp action))))
 
@@ -1406,7 +1416,6 @@ and have a last compile time which is greater than the last compile time of COMP
 
 
 ;; AND THE EXECUTE METHODS THEMSELVES
-;;; TODO: From here add :before test on system file-action  to make sure component-is-present
 (defmethod execute :before ((system system) (action file-action))
   (unless (component-exists-p system)
     (restart-case (error 'system-not-installed :system system)
@@ -1416,6 +1425,7 @@ and have a last compile time which is greater than the last compile time of COMP
   (when (supportedp component)
     (loop for (dep-action . dep-component) in (dependencies-of action component) :do
           (execute dep-component dep-action))))
+
 
 (defgeneric component-exists-p (component)
   (:method ((component file))
@@ -1725,7 +1735,6 @@ module to be the parent of new-module with version VERSION."
      (maphash #'(lambda (key value) (setf (gethash key ret) value)) hash)
      ret)))
 
-;; TODO: Check why we are copying objects here and is it really necessary?
 (defun copy-slots  (from to slot-names &key (copy t))
   (dolist (name slot-names)
     (when (and (slot-exists-p from name)
@@ -2170,7 +2179,7 @@ typically using define-system, will have a provider with a url of URL."
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 1 7) 
+  (:version 0 1 ) 
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "mb"))

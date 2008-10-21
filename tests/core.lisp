@@ -72,7 +72,6 @@ Bindings are the same as in flet/labels"
 (defmethod execute ((component error-file) (action source-file-action))
   (error 'deliberate-error))
 
-
 (defmacro with-slot-assertions ((&rest slot-names) &body body)
   "Runs body in an environment which as the macro
 \(assert-slot-values list-of-values form) present.
@@ -117,7 +116,7 @@ a list created by extracting SLOT-NAMES from form."
 (defun extra-test-systems ()
   (let ((sys (create-component nil :test 'system '((:version 0 8 0))))
         (sys2 (create-component nil :test 'system '((:version 0 9 0))))
-        (dep (create-component nil :dep 'system '((:requires (:test :version (0 8 0)))))))
+        (dep (create-component nil :dep 'system '((:needs (:test :version (0 8 0)))))))
     (add-component-to (create-component sys "foo" 'testing-file) sys)
     (add-component-to (create-component sys :module1 'module) sys)
 
@@ -127,7 +126,7 @@ a list created by extracting SLOT-NAMES from form."
 
 (defun dependent-test-systems ()
   (let ((sys (create-component nil :needs-test 'system '((:needs :test))))
-        (sys2 (create-component nil :needs-test2 'system '((:needs :test) (:uses-macros-from :test)))))
+        (sys2 (create-component nil :needs-test2 'system '((:uses-macros-from :test)))))
 
     (add-component-to (create-component sys "foo" 'testing-file) sys)
     (add-component-to (create-component sys2 "foo" 'testing-file) sys2)
@@ -234,11 +233,32 @@ a list created by extracting SLOT-NAMES from form."
                                               'load-action))))
 
 
+(define-test load-needs-compile
+  (with-test-systems ()
+    (let ((sys (define-test-system :load-needs-compile ()
+                 (:components ("module1" module) "file1"))))
+      ;; ensure that loading file1 requires file1 to be compiled.
+      (destructuring-bind ((action . file))
+          (dependencies-of 'load-action (find-component sys "file1"))
+        (assert-eq file (find-component sys "file1"))
+        (assert-true (typep action 'compile-action)))
+
+      ;; but this does not apply to systems.
+      (assert-true (endp (dependencies-of 'load-action sys)))
+      ;; or modules
+      (assert-true (endp (dependencies-of 'load-action (find-component sys "module1")))))))
 
 (define-test on-macro-use-list
   (with-test-systems (default-test-systems dependent-test-systems)
+
     (assert-false (on-macro-use-list (find-system :needs-test) (find-system :test)))
     (assert-true (on-macro-use-list (find-system :needs-test2) (find-system :test)))
+
+    ;; ensure that :uses-macros-from adds a dependency
+    (destructuring-bind ((action . system))
+            (component-dependencies (find-system :needs-test2) (make-instance 'load-action))
+      (assert-true (typep action 'load-action))
+      (assert-eql system (find-system :test)))
 
     ;; load needs-test & needs-test2
     (perform :needs-test 'load-action)
