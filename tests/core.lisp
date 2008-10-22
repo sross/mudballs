@@ -613,6 +613,18 @@ a list created by extracting SLOT-NAMES from form."
       (assert-true (catch 'sysdef-around (execute sys 'load-action) nil)))))
 
 
+(define-test system-traversal-tests ()
+  (with-test-systems ()
+    (let ((count 0))
+      (do-systems (sys) (incf count))
+      (assert= 2 count))
+    (let ((systems (systems-matching (constantly t))))
+      (map-systems (lambda (x) (setf systems (delete x systems))))
+      (assert-true (endp systems)))
+    (let ((first (first (systems-matching (constantly t)))))
+      (undefine-system first)
+      (assert= 1 (length (systems-matching (constantly t)))))))
+
 ;(mb:test :mb.sysdef)
                      
 (princ (run-tests))

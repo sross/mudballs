@@ -45,9 +45,9 @@
    ;; core protocol
    #:NAME-OF #:process-options #:PROCESS-OPTION #:EXECUTE #:PERFORM #:SUPPORTEDP  #:MODULE-DIRECTORY
    #:COMPONENT-PATHNAME #:INPUT-FILE #:INPUT-WRITE-DATE #:FASL-PATH #:OUTPUT-FILE #:OUTPUT-WRITE-DATE
-   #:ALL-FILES  #:OUT-OF-DATE-P #:DEPENDENCY-APPLICABLEP
+   #:ALL-FILES  #:OUT-OF-DATE-P #:DEPENDENCY-APPLICABLEP 
    #:COMPONENT-DEPENDENCIES #:ACTION-DEPENDENCIES #:DEPENDENCIES-OF #:COMPONENT-EXISTS-P
-   #:COMPONENT-OUTPUT-EXISTS-P  #:APPLICABLE-COMPONENTS #:COMPONENT-APPLICABLE-P #:define-SYSTEM
+   #:COMPONENT-OUTPUT-EXISTS-P  #:APPLICABLE-COMPONENTS #:COMPONENT-APPLICABLE-P 
    #:FIND-SYSTEM #:FIND-COMPONENT #:TOPLEVEL-COMPONENT-OF #:CHECK-SUPPORTED-P
 
    ;; ACCESSORS
@@ -65,13 +65,16 @@
    #:COMPILATION-ERROR #:COMPILE-FAILED #:COMPILE-WARNED #:DUPLICATE-COMPONENT #:SYSTEM-REDEFINED
 
    ;; SYSTEM DEFINITION
-   #:REGISTER-SYSDEFS
+   #:REGISTER-SYSDEFS #:define-system #:UNDEFINE-SYSTEM
 
    ;; WILDCARD MODULES
    #:WILDCARD-MODULE #:WILDCARD-PATHNAME-OF #:WILDCARD-SEARCHER
 
    ;; PATCHES
    #:LOAD-PATCHES #:CREATE-PATCH-MODULE #:PATCH
+
+   ;; SYSTEM TRAVERSAL
+    #:SYSTEMS-MATCHING #:DO-SYSTEMS #:MAP-SYSTEMS #:SYSTEMS-FOR
 
    ;; CONFIG FILE
    #:*load-config* #:load-config #:create-config-component
@@ -109,7 +112,7 @@ descending into PARENT-SYSTEM-NAME's components using MODULE-NAMES."
   '(and (not null) (or symbol cons)))
 
 ;;; SPECIALS
-(defvar *systems* ()
+(defparameter *systems* ()
   "List containing all the defined systems in the Lisp image.")
 
 (declaim (stream *info-io*)
@@ -1612,8 +1615,21 @@ for define-system. This has only been tested with Lispworks at the moment. Sorry
       (when undocumented
         (format outs "~&~%The following options are not currently documented;~%~{~S~^, ~}" undocumented)))))
 
+;;; SYSTEM TRAVERSAL
+(defmacro do-systems ((var) &body body)
+  `(dolist (,var *systems*)
+     ,@body))
+
+(defun map-systems (fn)
+  (mapcar fn *systems*))
+
+(defun systems-matching (fn)
+  (remove-if-not fn *systems*))
 
 ;;; SYSTEM CREATION AND LOCATION
+(defun undefine-system (system)
+  (setf *systems* (delete system *systems*)))
+  
 (defmacro define-system (name (&optional (class 'system)) &body options)
   (declare (system-name name) (symbol class))
   "Define a system called NAME of type CLASS and customized using OPTIONS.
@@ -1695,6 +1711,7 @@ module to be the parent of new-module with version VERSION."
   (setf *systems* (delete (funcall (system-key) system) *systems* :test #'equalp :key (system-key)))
   (pushnew system *systems* :test #'equalp :key (system-key))
   system)
+
 
 ;; Unlike ASDF we do not reuse our objects when redefining systems.
 ;; Explanation.....
@@ -1799,9 +1816,9 @@ It is either a string or symbol designating the system with that name, or a syst
   (remove name *systems* :key 'name-of :test-not 'name=))
 
 (defun systems-for (name &key (version '(>= 0)))
-  (sort (remove-if-not (lambda (sys)
-                         (version-satisfies (version-of sys) version))
-                       (available-systems name))
+  (sort (systems-matching (lambda (sys)
+                            (and (name= (name-of sys) name)
+                                 (version-satisfies (version-of sys) version))))
         'version>
         :key 'version-of))
 
