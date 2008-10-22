@@ -2187,9 +2187,13 @@ typically using define-system, will have a provider with a url of URL."
 
 
 
-(defclass grovel-file (lisp-file)
+(defclass grovel-file (lisp-source-file)
   ()
   (:default-initargs :type "cffi.lisp"))
+
+
+;; A User package.
+(defpackage :sysdef-user (:use :cl :mb.sysdef))
 
 
 
@@ -2199,10 +2203,10 @@ typically using define-system, will have a provider with a url of URL."
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 1 8) 
+  (:version 0 1 9) 
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
-  (:components "mb"))
+  (:components "mb" "mudballs"))
 
 ;; and register ourselves as loaded
 (let ((first-file (find-component :mb.sysdef "mb")))
@@ -2210,7 +2214,10 @@ typically using define-system, will have a provider with a url of URL."
         (get-universal-time)))
 
 
-(defpackage :sysdef-user (:use :cl :mb.sysdef))
+(perform :mb.sysdef 'load-action)
+(register-sysdefs)
+
+
 
 
 ;; EOF
