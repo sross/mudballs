@@ -45,7 +45,7 @@
    ;; core protocol
    #:NAME-OF #:process-options #:PROCESS-OPTION #:EXECUTE #:PERFORM #:SUPPORTEDP  #:MODULE-DIRECTORY
    #:COMPONENT-PATHNAME #:INPUT-FILE #:INPUT-WRITE-DATE #:FASL-PATH #:OUTPUT-FILE #:OUTPUT-WRITE-DATE
-   #:ALL-FILES  #:OUT-OF-DATE-P #:DEPENDENCY-APPLICABLEP 
+   #:ALL-FILES  #:OUT-OF-DATE-P #:DEPENDENCY-APPLICABLEP #:NAME=
    #:COMPONENT-DEPENDENCIES #:ACTION-DEPENDENCIES #:DEPENDENCIES-OF #:COMPONENT-EXISTS-P
    #:COMPONENT-OUTPUT-EXISTS-P  #:APPLICABLE-COMPONENTS #:COMPONENT-APPLICABLE-P 
    #:FIND-SYSTEM #:FIND-COMPONENT #:TOPLEVEL-COMPONENT-OF #:CHECK-SUPPORTED-P
@@ -1565,7 +1565,7 @@ and have a last compile time which is greater than the last compile time of COMP
 ; Clean Action
 (defmethod execute ((component file) (action clean-action))
   (when-let (output-file (component-output-exists-p component))
-    (format *info-io* "~&DELETE ~A~%" output-file)
+    (format *standard-input* "~&DELETE ~A~%" output-file)
     (delete-file output-file)))
 
 
@@ -1617,17 +1617,21 @@ for define-system. This has only been tested with Lispworks at the moment. Sorry
 
 ;;; SYSTEM TRAVERSAL
 (defmacro do-systems ((var) &body body)
+  "Executes body for each system defined with VAR bound to an instance of SYSTEM."
   `(dolist (,var *systems*)
      ,@body))
 
 (defun map-systems (fn)
+  "Applies fn to each system available."
   (mapcar fn *systems*))
 
 (defun systems-matching (fn)
+  "Returns all systems for which (funcall FN system) returns true."
   (remove-if-not fn *systems*))
 
 ;;; SYSTEM CREATION AND LOCATION
 (defun undefine-system (system)
+  "Removes SYSTEM from the set of defined systems."
   (setf *systems* (delete system *systems*)))
   
 (defmacro define-system (name (&optional (class 'system)) &body options)
@@ -1810,6 +1814,7 @@ It is either a string or symbol designating the system with that name, or a syst
   (string name))
 
 (defun name= (a b)
+  "Returns true if the A and B are considered equal as system names."
   (equalp (normalize a) (normalize b)))
 
 (defun available-systems (name)
@@ -2203,13 +2208,21 @@ typically using define-system, will have a provider with a url of URL."
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 1 9) 
+  (:version 0 1 10) 
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
-  (:components "mb" "mudballs"))
+  (:components "sysdef" "mudballs"))
+
+
+;; we define our boot system to allow us to do a system-update with minimal fuss
+;; It's not meant to be executed upon or to be available for public consumption.
+(define-system :boot ()
+  (:components "boot")
+  (:provider t) ;; only boot is allowed to use T here!
+  (:pathname #.*root-pathname*))
 
 ;; and register ourselves as loaded
-(let ((first-file (find-component :mb.sysdef "mb")))
+(let ((first-file (find-component :mb.sysdef "sysdef")))
   (setf (time-of first-file (make-instance 'load-action))
         (get-universal-time)))
 

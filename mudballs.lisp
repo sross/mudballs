@@ -114,6 +114,13 @@ that the system will have been loaded."
   "Prints out some statistical information pertaining to the system designated by name."
   (mb:load :stat-action)
   (perform (resolve-name name :version version) 'sysdef::stat-action))
+
+
+(defun update-system ()
+  "Updates the system bootstrapping mechanism. This should only be necessary when a bug is found in the boot.lisp file."
+  (mb:load :installer)
+  (funcall (find-symbol #:system-update :installer)))
+  
   
 
 (defvar *lisp-level* :expert
