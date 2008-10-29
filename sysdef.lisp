@@ -37,7 +37,7 @@
    ;; special vars
    #:*info-io* #:*compile-fails-behaviour* #:*compile-warns-behaviour* #:*load-fails-behaviour*
    #:*fasl-output-root* #:*finders* #:*custom-search-modules*
-   #:*root-pathname* #:*sysdef-path* #:*systems-path*
+   #:*root-pathname* #:*sysdef-path* #:*systems-path* #:*DEFAULT-DEVELOPMENT-MODE*
 
    ;; types
    #:system-name #:system-designator
@@ -65,7 +65,7 @@
    #:COMPILATION-ERROR #:COMPILE-FAILED #:COMPILE-WARNED #:DUPLICATE-COMPONENT #:SYSTEM-REDEFINED
 
    ;; SYSTEM DEFINITION
-   #:REGISTER-SYSDEFS #:define-system #:UNDEFINE-SYSTEM
+   #:REGISTER-SYSDEFS #:define-system #:undefine-system
 
    ;; WILDCARD MODULES
    #:WILDCARD-MODULE #:WILDCARD-PATHNAME-OF #:WILDCARD-SEARCHER
@@ -74,7 +74,7 @@
    #:LOAD-PATCHES #:CREATE-PATCH-MODULE #:PATCH
 
    ;; SYSTEM TRAVERSAL
-    #:SYSTEMS-MATCHING #:DO-SYSTEMS #:MAP-SYSTEMS #:SYSTEMS-FOR
+    #:systems-matching #:do-systems #:map-systems #:systems-for
 
    ;; CONFIG FILE
    #:*load-config* #:load-config #:create-config-component
@@ -100,7 +100,7 @@
    :class-slots :slot-definition-type :slot-definition-name :slot-definition-initargs
    :method-qualifiers))
 
-(in-package :mb.sysdef)
+(in-package :sysdef)
 
 ;;; TYPES
 (deftype system-name ()
@@ -175,7 +175,7 @@ System paths take the form *systems-path* /SYSTEM-NAME/VERSION/")
 compiled to.
 This can be set using the preference (in ~/.mudballs.prefs) :fasl-output-root")
 
-(defvar *builtin-systems* '(:mb.sysdef :sysdef-definitions))
+(defvar *builtin-systems* '(:mudballs :sysdef-definitions))
 
 (defparameter *finders* '(default-system-finder)
   "A list of functions with the arglist (name &rest args &key errorp version) which are used
@@ -811,6 +811,16 @@ them against component."))
               (apply #'check-supported-p option))
           options)))
 
+(defgeneric supports-failed (component)
+  (:method ((comp component))
+   (let ((if-fails (if-supports-fails comp)))
+     (cond ((eql if-fails :error)
+            (restart-case (error 'component-not-supported :component comp)
+              (continue () :report "Ignore the failure and continue."
+                t)))
+           ((and if-fails (symbolp if-fails)) (funcall if-fails comp))
+           (t (error "~S is an invalid option for :IF-SUPPORTS-FAILS." if-fails))))))
+
 (defgeneric supportedp (component)
   (:documentation "Returns true if component is supported.")
   (:method ((component component))
@@ -819,16 +829,7 @@ them against component."))
                   (apply #'check-supported-p supports))
               (supports-of component))
        t
-       (supports-fails component))))
-
-(defmethod supports-fails ((comp component))
-  (let ((if-fails (if-supports-fails comp)))
-    (cond ((eql if-fails :error)
-           (restart-case (error 'component-not-supported :component comp)
-             (continue () :report "Ignore the failure and continue."
-               t)))
-          ((and if-fails (symbolp if-fails)) (funcall if-fails comp))
-          (t (error "~S is an invalid option for :IF-SUPPORTS-FAILS." if-fails)))))
+       (supports-failed component))))
 
 (defmethod process-option ((comp component) (key (eql :supports)) &rest data)
   "<strong>:supports</strong> <i>supports-spec</i>
@@ -1056,7 +1057,7 @@ This adds various keywords to the system which are used when mb:search'ing throu
                      #'identity specb)))
 
 (defun version-test (test )
-  (let ((sym (intern (format nil "VERSION~S" test) :mb.sysdef)))
+  (let ((sym (intern (format nil "VERSION~S" test) :sysdef)))
     (if (fboundp sym)
         (symbol-function sym)
         (error "No such test ~S."  sym))))
@@ -1579,7 +1580,6 @@ and have a last compile time which is greater than the last compile time of COMP
         :for key-specializer = (second (method-specializers method))
         :when (eql-specializer-p key-specializer) :collect (second key-specializer)))
 
-
 (defgeneric specialized-option (thing)
   (:method ((thing effective-slot-definition))
    (copy-list (slot-definition-initargs thing)))
@@ -1588,6 +1588,9 @@ and have a last compile time which is greater than the last compile time of COMP
 
 (defvar *do-not-document*
   '(:contact :author :maintainer :licence :license :contact :documentation :name :component :parent :provider))
+
+(defun symbol< (a b)
+  (string< (string a) (string b)))
 
 (defun possible-define-system-options ()
   "this is a helper method which creates some html text from slots and
@@ -1601,11 +1604,11 @@ for define-system. This has only been tested with Lispworks at the moment. Sorry
            (slots (remove-if #'(lambda (slot) (intersection (slot-definition-initargs slot) method-keys))
                              (initargable-slots)))
            (to-document (nconc slots methods)))
-      (let ((documented (remove-if-not (lambda (x) (documentation x t)) to-document)))
+      (let ((documented (sort (remove-if-not (lambda (x) (documentation x t)) to-document) #'symbol<
+                              :key (lambda (x) (first (specialized-option x))))))
         (values (format nil "<strong>Possible Options:</strong>~%~{~@[~&~%~A~^~%~]~}" (mapcar (lambda (x) (documentation x t)) documented))
                 (set-difference (mapcan 'specialized-option (set-difference to-document documented))
                                 *do-not-document*))))))
-
 
 (defmethod documentation ((name (eql 'define-system)) (key (eql 'function)))
   (multiple-value-bind (documented undocumented) (possible-define-system-options)
@@ -2198,13 +2201,13 @@ typically using define-system, will have a provider with a url of URL."
 
 
 ;; A User package.
-(defpackage :sysdef-user (:use :cl :mb.sysdef))
+(defpackage :sysdef-user (:use :cl :sysdef))
 
 
 
 ;;; BOOTSTRAP
 ;; And now we create ourself as a system
-(define-system :mb.sysdef ()
+(define-system :mudballs ()
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
@@ -2212,7 +2215,6 @@ typically using define-system, will have a provider with a url of URL."
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))
-
 
 ;; we define our boot system to allow us to do a system-update with minimal fuss
 ;; It's not meant to be executed upon or to be available for public consumption.
@@ -2222,12 +2224,12 @@ typically using define-system, will have a provider with a url of URL."
   (:pathname #.*root-pathname*))
 
 ;; and register ourselves as loaded
-(let ((first-file (find-component :mb.sysdef "sysdef")))
+(let ((first-file (find-component :mudballs "sysdef")))
   (setf (time-of first-file (make-instance 'load-action))
         (get-universal-time)))
 
 
-(perform :mb.sysdef 'load-action)
+(perform :mudballs 'load-action)
 (register-sysdefs)
 
 

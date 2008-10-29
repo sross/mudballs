@@ -10,7 +10,7 @@
   (:export
    #:load #:compile #:search #:lisp-level #:clean #:test #:stat 
    ;; download related
-   #:install #:update #:remove #:add #:upgrade))
+   #:install #:update #:remove #:add #:upgrade #:document))
 
 (in-package :mudballs)
 
@@ -121,7 +121,11 @@ that the system will have been loaded."
   (mb:load :installer)
   (funcall (find-symbol #:system-update :installer)))
   
-  
+
+(defun document (name)
+  (mb:load :document-action)
+  (mb:load name)
+  (perform (resolve-name name) (intern "DOCUMENT-ACTION" :sysdef.document-action)))
 
 (defvar *lisp-level* :expert
   "one of :beginner, :intermediate or :expert")
