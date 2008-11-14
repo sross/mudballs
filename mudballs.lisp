@@ -10,7 +10,9 @@
   (:export
    #:load #:compile #:search #:lisp-level #:clean #:test #:stat 
    ;; download related
-   #:install #:update #:remove #:add #:upgrade #:document))
+   #:install #:update #:update-system #:remove #:add #:upgrade #:document
+   ;; from sysdef
+   #:find-system #:find-component))
 
 (in-package :mudballs)
 
@@ -119,7 +121,7 @@ that the system will have been loaded."
 (defun update-system ()
   "Updates the system bootstrapping mechanism. This should only be necessary when a bug is found in the boot.lisp file."
   (mb:load :installer)
-  (funcall (find-symbol #:system-update :installer)))
+  (funcall (find-symbol '#:system-update :installer)))
   
 
 (defun document (name)

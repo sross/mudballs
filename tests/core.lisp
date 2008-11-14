@@ -474,6 +474,7 @@ a list created by extracting SLOT-NAMES from form."
     ("0.*" (and (>= 0) (< 1)))
     (1 (1))
     ((1 3 *) (and (>= 1 3) (< 1 4)))
+    ((and "0.15.*" (not "0.15.5") (>= 0 15 4)) (AND "0.15.*" (NOT "0.15.5") (>= 0 15 4)))
     ((1 3) (1 3)))
   (assert-error 'error (coerce-to-version "not-a-version"))
   (assert-error 'error (coerce-to-version 'not-a-version)))

@@ -1020,6 +1020,9 @@ This adds various keywords to the system which are used when mb:search'ing throu
     (setf (pathname-of system) (pathname-without (current-directory) (fasl-path system)))))
 
 ;; This also needs to run after initialize-instance in case *default-development-mode* is bound to true
+;; This isn't exactly how i pictured this all working :(
+;; removing the fasl-path from the end of pathname just doesn't sit well with me, this is also
+;; a sympton of the larger problem where compilation of sysdef files does not honour *fasl-output-root*
 (defmethod initialize-instance :after ((system system) &rest initargs &key)
   (declare (ignore initargs))
   (when (development-mode system)
@@ -1150,7 +1153,8 @@ This adds various keywords to the system which are used when mb:search'ing throu
 
 (defun complex-version-spec-p (spec)
   (and (consp spec) (member (first spec) *complex-spec-operators*)
-       (every 'version-spec-p (rest spec))))
+       (every 'versionp (rest spec))))
+
 
 (defun string-version-spec-p (spec)
   "A string version is an exact version spec in string form. ie. 1.2.3"
@@ -1587,7 +1591,8 @@ and have a last compile time which is greater than the last compile time of COMP
    (specialized-options (list thing))))
 
 (defvar *do-not-document*
-  '(:contact :author :maintainer :licence :license :contact :documentation :name :component :parent :provider))
+  '(:contact :author :maintainer :licence :license :contact
+    :documentation :name :component :parent :provider :requires))
 
 (defun symbol< (a b)
   (string< (string a) (string b)))
@@ -2020,14 +2025,6 @@ ie. All that are part of the standard mudballs distribution or custom files
 loaded by functions on *custom-search-modules*."
   (declare (values))
   (perform :sysdef-definitions 'load-action))
-
-;; and force system registration 
-(defmethod perform :before ((sys system) (action action) &rest plan-data)
-  (declare (ignorable plan-data))
-  (unless (member (name-of sys) *builtin-systems*)
-    (register-sysdefs)))
-
-
 
 ;;;;;;;
 ;;; PATCH SYSTEM
