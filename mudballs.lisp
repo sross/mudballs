@@ -12,7 +12,9 @@
    ;; download related
    #:install #:update #:update-system #:remove #:add #:upgrade #:document
    ;; from sysdef
-   #:find-system #:find-component))
+   #:find-system #:find-component)
+  (:documentation "The :MUDBALLS package provides a number of utility functions for easier interaction with
+the :MB.SYSDEF package. It also provides some useful search and install functions."))
 
 (in-package :mudballs)
 

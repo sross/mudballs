@@ -98,7 +98,9 @@
                         (error "Can't find suitable CLOS package.")))
    :class-precedence-list :generic-function-methods :method-specializers :effective-slot-definition
    :class-slots :slot-definition-type :slot-definition-name :slot-definition-initargs
-   :method-qualifiers))
+   :method-qualifiers)
+  (:documentation "The :MB.SYSDEF package contains all the plumbing for defining your own systems.
+Typically you would not use this package directly but rather define your systems while `in-package` :sysdef-user."))
 
 (in-package :sysdef)
 
@@ -1105,7 +1107,9 @@ This adds various keywords to the system which are used when mb:search'ing throu
     (or (some (lambda (sub)
                 (version-satisfies version sub))
               (rest against)))
-    (not (not (version-satisfies version (first (rest against)))))))
+    (not (assert (eql 1 (length (rest against))) ()
+           "NOT specifiers only take 1 argument")
+        (not (version-satisfies version (first (rest against)))))))
 
 ;;; COERCE-TO-VERSION
 ;; We expect versions to be
@@ -1149,7 +1153,6 @@ This adds various keywords to the system which are used when mb:search'ing throu
   (and (consp spec)
        (find (first spec) *boundary-spec-tests*)
        (exact-version-spec-p (rest spec))))
-
 
 (defun complex-version-spec-p (spec)
   (and (consp spec) (member (first spec) *complex-spec-operators*)
@@ -1611,7 +1614,8 @@ for define-system. This has only been tested with Lispworks at the moment. Sorry
            (to-document (nconc slots methods)))
       (let ((documented (sort (remove-if-not (lambda (x) (documentation x t)) to-document) #'symbol<
                               :key (lambda (x) (first (specialized-option x))))))
-        (values (format nil "<strong>Possible Options:</strong>~%~{~@[~&~%~A~^~%~]~}" (mapcar (lambda (x) (documentation x t)) documented))
+        (values (format nil "<strong>Possible Options:</strong>~%~{~@[~&~%~A~^~%~]~}"
+                        (mapcar (lambda (x) (documentation x t)) documented))
                 (set-difference (mapcan 'specialized-option (set-difference to-document documented))
                                 *do-not-document*))))))
 
@@ -1664,7 +1668,6 @@ Systems are unique on a name (tested using string-equal), version basis.
 
  
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  ;; We need these function present at compile time
 
 (defun multiple-version-definitions-p (options)
   (get-from-options options :versions))
@@ -1672,7 +1675,7 @@ Systems are unique on a name (tested using string-equal), version basis.
 (defun expand-multiple-versions (name class options)
   (let ((without-versions (remove :versions options :key 'car)))
     (assert (get-from-options options :versions)
-        (options) "Options does not contain an :versions form.")
+        (options) "Options does not contain a :versions form.")
     (mapcar #'(lambda (version)
                 `(define-system ,name (,class)
                    (:version ,@version)
@@ -2000,7 +2003,7 @@ but version ~A is already loaded." (version-string system) (name-of system)
                                      (:development-systems ,(development-mode-of module))
                                      (:output-pathname ,(merge-pathnames (fasl-path file) (compile-file-pathname file)))))))
 
-(defun wildcard-searcher (path &key development-mode)
+(defun wildcard-searcher (path &key (development-mode t))
   (make-instance 'wildcard-sysdef-searcher :search-directory path :development-mode development-mode))
 
 (defclass sysdef-file (lisp-source-file)
@@ -2198,7 +2201,10 @@ typically using define-system, will have a provider with a url of URL."
 
 
 ;; A User package.
-(defpackage :sysdef-user (:use :cl :sysdef))
+(defpackage :sysdef-user (:use :cl :sysdef)
+  (:documentation "The :SYSDEF-USER package is provided as a workspace area to define your own
+packages in, all mudballs definition files are expected to contain  (in-package :sysdef-user)
+at the top of the file."))
 
 
 
@@ -2208,7 +2214,7 @@ typically using define-system, will have a provider with a url of URL."
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 1 11) 
+  (:version 0 2) 
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))
