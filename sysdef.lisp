@@ -1573,7 +1573,7 @@ and have a last compile time which is greater than the last compile time of COMP
 ; Clean Action
 (defmethod execute ((component file) (action clean-action))
   (when-let (output-file (component-output-exists-p component))
-    (format *standard-input* "~&DELETE ~A~%" output-file)
+    (format *verbose-out* "~&DELETE ~A~%" output-file)
     (delete-file output-file)))
 
 
