@@ -146,7 +146,7 @@ that the system will have been loaded."
 (defun update-system ()
   "Updates the system bootstrapping mechanism. This should only be necessary when a bug is found in the boot.lisp file."
   (mb:load :installer)
-  (funcall (find-symbol '#:system-update :installer)))
+  (funcall (find-symbol "SYSTEM-UPDATE" :installer)))
   
 
 (defun document (name)
