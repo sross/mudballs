@@ -403,9 +403,9 @@ Mac                    :mac
 
 If running on an operating system other than the ones mentioned above NIL will be returned.
 The result of invoking this function is made present on *features*"
-    #+(or :mswindows :windows) :mswindows
-    #+(or :linux (and :clisp :unix)) :linux
-    #+(or :macosx :darwin) :mac)
+    (or #+(or :mswindows :windows) :mswindows
+        #+(or :macosx :darwin :macos) :mac
+        #+(or :linux (and :clisp :unix)) :linux))
 
   (defun platform ()
     "Returns a canonical symbol which can be used to identify the underlying architecture upon
@@ -416,11 +416,11 @@ The currently understood values are as follows.
 :x86, :x86-64, :ppc, :hppa.
 
 The result of invoking this function is made present on *features*"
-    #+(or :x86 :pc386 :i486) :x86
-    #+(or :amd64 :x86-64 :x64) :x86-64
-    #+(or :ppc :powerpc) :ppc
-    #+:hppa :hppa)
-
+    (or #+(or :amd64 :x86-64 :x64) :x86-64
+        #+(or :x86 :pc386 :i486) :x86
+        #+(or :ppc :powerpc) :ppc
+        #+:hppa :hppa))
+    
   (pushnew (os) *features*)
   (pushnew (platform) *features*)
   (pushnew (implementation) *features*)
@@ -1516,7 +1516,7 @@ and have a last compile time which is greater than the last compile time of COMP
       ;; invalid FASL recompilation
       (#+sbcl sb-ext:invalid-fasl #+allegro excl::file-incompatible-fasl-error
         #+lispworks conditions:fasl-error #+cmu ext:invalid-fasl
-        #-(or sbcl allegro lispworks cmu) error ()
+        #-(or sbcl allegro lispworks cmu) fasl-error ()
         (execute file 'clean-action)
         (execute file 'compile-action)
         (call-next-method)))))
@@ -2216,7 +2216,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 2 1)  
+  (:version 0 2 2)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))
