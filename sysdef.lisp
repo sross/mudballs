@@ -869,6 +869,63 @@ See check-supported-p, os, implementation, platform"
     (format stream "on ~S" (component-of dep))))
 
 (defmethod process-option ((comp component) (key (eql :needs)) &rest data)
+"  <strong>:needs</strong> <i>specification</i>*
+specification  => ([<i>match-action</i>] <i>dependency</i> [<i>action-to-take</i>])
+match-action   => class name
+dependency     => component name
+action-to-take => class name
+
+The :needs option specifies the dependencies that this component has on other components in the same module.
+
+The full specification of a :needs option is as follows
+   <tt>([match-action] dependency-name [action-to-take])</tt>
+   
+match-action is a class name which is used to match the action currently being processed.
+action-to-take is a class name designating the class of an action to apply to the dependency.
+dependency name is the name of a component in the same module as the component for which the :needs option is being 
+processed.
+Both match-action and action-to-take can be left unspecified which results in a dependency specification
+for the form (<i>dependency-name</i>) and, for the sake of sanity, can be simplified to <i>dependency-name</i>.
+When left unspecified, match-action defaults to 'ACTION resulting in a match to all actions while action-to-take
+defaults to nil which will result in the current action being invoked being applied to the dependency.
+
+It is not valid to specify action-to-take and leave match-action unspecified.
+ie. specifications of the form <tt>(\"macros\" (:needs (\"package\" load-action)))</tt> are NOT allowed.
+But it is valid to leave action-to-take unspecified while specifying match action
+ie. specifications of the form <tt>(\"macros\" (:needs (source-file-action \"package\")))</tt> are allowed.
+
+Dependencies are processed as follows:
+Before an action is processed on a component the applicable dependencies for a particular action & component
+combination are run first. A dependency is applicable (see dependency-applicablep) to an action if the match-action
+of the dependency is a subclass of the action being processed. 
+The appropriate action to apply is then computed using the following rules;
+If action-to-take is non-NIL then a new action is created using <tt>(make-instance action-to-take)</tt>, if it is NIL
+then the current action being processed is used. This action is then applied to the dependency component which is
+looked for in the parent of the component being processed (using find-component).
+
+
+Example 1.
+<tt>(:components \"package\" (\"macros\" (:needs \"package\")))</tt>
+=> This specifies that, before performing any action upon the \"macros\" component that the action should 
+   first be applied to the package component.
+   
+Example 2.
+<tt>(:components \"package\" 
+             (\"macros\" (:needs (source-file-action \"package\"))))</tt>
+=> This specifies that, before performing any subclass of source-file-action (eg. compile-action or load-action) against 
+   \"macros\" that the action must be applied to \"packages\" first.
+   Actions which are not subclasses of source-file-action will not consider this dependency.
+   
+   
+Example 3.
+<tt>(:components \"package\"
+            (\"my-generated-file\" generated-file)
+            (\"macros\"            (:needs (source-file-action \"my-generated-file\" generate-action))))</tt>
+
+=> This will cause a generate-action to be applied to the \"my-generated-file\" component before any
+   source-file-action's are applied to the \"macros\" component.
+"   
+   
   (dolist (one-dep (mapcar #'make-dependency-spec data))
     (revpush one-dep (needs-of comp))))
 
