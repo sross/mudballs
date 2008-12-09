@@ -903,6 +903,10 @@ If action-to-take is non-NIL then a new action is created using <tt>(make-instan
 then the current action being processed is used. This action is then applied to the dependency component which is
 looked for in the parent of the component being processed (using find-component).
 
+As an additional note, when using :needs to specify the dependencies between systems a system can be specified
+using the (<i>name</i> :version <i>version-specifier</i>) syntax. This can allow us to depend on a particular version of a system.
+For example, to depend on version 1.3 of :cl-ppcre you can use the following form.
+<tt>(:needs (:cl-ppcre :version (1 3)))</tt>
 
 Example 1.
 <tt>(:components \"package\" (\"macros\" (:needs \"package\")))</tt>

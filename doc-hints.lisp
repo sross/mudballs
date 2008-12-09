@@ -41,7 +41,7 @@ list an error of type duplicate-component will be signalled.")
                   (:directory (\"system\" \"boot\"))
                   (:serial t)
                   (:components \"first\" \"second\")
-                  (:requires \"packages\")))))
+                  (:needs \"packages\")))))
 
 </pre>
 
