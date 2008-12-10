@@ -232,7 +232,7 @@ output to *VERBOSE-OUT*.  Returns the shell's exit code."
      (sb-ext:run-program  
       #+win32 "sh" #-win32 "/bin/sh"
       (list  "-c" command)
-      #+win32 #+win32 :search t
+      #+win32 :search #+win32 t
       :input nil :output *verbose-out*))
     
     #+(or cmu scl)
@@ -1295,8 +1295,10 @@ This adds various keywords to the system which are used when mb:search'ing throu
   (:method ((component component)) nil)
   (:method ((sys null)) (merge-pathnames (make-pathname :version :newest)
                                          (or *fasl-output-root* *systems-path*)))
-  (:method ((system module))
-   (or (output-pathname-of system) (component-pathname system)))
+  (:method ((module module))
+   (or (output-pathname-of module)
+       (merge-pathnames (make-pathname :directory (module-directory module))
+                        (output-file (parent-of module)))))
 
   (:method :around ((file file))
    (or (output-pathname-of file)
@@ -1503,7 +1505,9 @@ and have a last compile time which is greater than the last compile time of COMP
   (:documentation "Returns T if the component is present on the file system.")
   (:method ((component module))
    ;; clisp doesn't support probe-file on directories
-   (not (null (directory (component-pathname component)))))
+   #+clisp
+   (not (null (directory (component-pathname component))))
+   #-clisp (call-next-method))
   (:method ((component component))
    (probe-file (component-pathname component))))
 
@@ -2070,9 +2074,6 @@ but version ~A is already loaded." (version-string system) (name-of system)
   ((development-systems-p :initarg :development-systems :initform nil :accessor development-systems-p
                           :documentation "Controls whether systems defined by this sydesf file will be created in development mode")))
 
-(defmethod fasl-directory ((sysdef-file sysdef-file))
-  ".sysdef")
-
 (defun sysdef-file-fasl-root-dir (file)
   (merge-pathnames (make-pathname :directory (append '(:relative "system-definitions")
                                                      (cdr (pathname-directory (enough-namestring (component-pathname file)
@@ -2298,7 +2299,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 2 6)
+  (:version 0 2 7)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))

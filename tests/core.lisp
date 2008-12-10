@@ -140,11 +140,11 @@ a list created by extracting SLOT-NAMES from form."
   (with-test-systems (deprecated-systems)
     (let ((system (find-component :test-deprecated)))
       (assert-error 'deprecated-system (perform system 'load-action))
-      (assert-prints "System TEST-DEPRECATED is deprecated, Please use REPLACEMENT-SYSTEM instead."
+      (assert-prints "System :TEST-DEPRECATED 0.0.1 is deprecated, Please use REPLACEMENT-SYSTEM instead."
                      (princ (capture-condition deprecated-system (perform system 'load-action)))))
     (let ((system (find-component :test-deprecated2)))
       (assert-error 'deprecated-system (perform system 'load-action))
-      (assert-prints "System TEST-DEPRECATED2 is deprecated."
+      (assert-prints "System :TEST-DEPRECATED2 0.0.1 is deprecated."
                      (princ (capture-condition deprecated-system (perform system 'load-action)))))))
 
 
@@ -357,7 +357,18 @@ a list created by extracting SLOT-NAMES from form."
       (assert-equal (merge-pathnames (fasl-path (find-component sys "foo"))
                                      (compile-file-pathname #P"/tmp/foo.lisp"))
                     (output-file (find-component sys "foo")))
-      (assert-equal "/baz/bar.fas" (output-file (find-component sys "bar"))))))
+      (assert-equal "/baz/bar.fas" (output-file (find-component sys "bar"))))
+
+    ;; test with *fasl-output-root*
+    (let ((*fasl-output-root* #P"/tmp/"))
+      (let ((sys (define-test-system :for-test-system ()
+                   (:components "foo" ("bar" (:output-pathname "/baz/bar.fas"))))))
+
+        (assert-equal (merge-pathnames (fasl-path (find-component sys "foo"))
+                                       (make-pathname :version :newest :name "foo" :type (pathname-type (compile-file-pathname "foo.lisp"))
+                                                      :directory '(:absolute "tmp" "for-test-system")))
+                      (output-file (find-component sys "foo")))
+        (assert-equal "/baz/bar.fas" (output-file (find-component sys "bar")))))))
 
 (defclass ordering-file (testing-file)
   ((completed-actions :accessor completed-actions-of :initform ())))
@@ -572,12 +583,16 @@ a list created by extracting SLOT-NAMES from form."
     (assert-true (typep :foo 'system-name))
     (assert-false (typep "foo" 'system-name))))
 
+;; Clisp fails the doc tests for (documentation (or string symbol) 'system),
+;; there seems to be a method in place which is more specific than the custom one
 (define-test doc-test ()
   (with-test-systems ()
     (let ((sys (find-system "test")))
       (assert-equal (documentation sys 'system)
                     (doc sys))
+      #-clisp
       (assert-equal (documentation :test 'system) (doc sys))
+      #-clisp
       (assert-equal (documentation "test" 'system) (doc sys)))))
 
 
