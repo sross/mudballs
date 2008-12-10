@@ -44,7 +44,7 @@
    ;; core protocol
    #:NAME-OF #:process-options #:PROCESS-OPTION #:EXECUTE #:PERFORM #:SUPPORTEDP  #:MODULE-DIRECTORY
    #:COMPONENT-PATHNAME #:INPUT-FILE #:INPUT-WRITE-DATE #:FASL-PATH #:OUTPUT-FILE #:OUTPUT-WRITE-DATE
-   #:ALL-FILES  #:OUT-OF-DATE-P #:DEPENDENCY-APPLICABLEP #:NAME=
+   #:ALL-FILES  #:OUT-OF-DATE-P #:DEPENDENCY-APPLICABLEP #:NAME= 
    #:COMPONENT-DEPENDENCIES #:ACTION-DEPENDENCIES #:DEPENDENCIES-OF #:COMPONENT-EXISTS-P
    #:COMPONENT-OUTPUT-EXISTS-P  #:APPLICABLE-COMPONENTS #:COMPONENT-APPLICABLE-P 
    #:FIND-SYSTEM #:FIND-COMPONENT #:TOPLEVEL-COMPONENT-OF #:CHECK-SUPPORTED-P
@@ -63,9 +63,10 @@
 
    ;; CONDITIONS
    #:SYSDEF-CONDITION #:SYSDEF-ERROR #:SYSDEF-WARNING #:NO-SUCH-COMPONENT #:COMPONENT-NOT-SUPPORTED
-   #:COMPONENT-NOT-PRESENT #:DEPRECATED-SYSTEM #:FASL-ERROR #:FASL-OUT-OF-DATE #:FASL-DOES-NOT-EXIST
+   #:DEPRECATED-SYSTEM #:FASL-ERROR #:FASL-OUT-OF-DATE #:FASL-DOES-NOT-EXIST
    #:COMPILATION-ERROR #:COMPILE-FAILED #:COMPILE-WARNED #:DUPLICATE-COMPONENT #:SYSTEM-REDEFINED
-
+   #:SYSTEM-NOT-INSTALLED #:MISSING-COMPONENT
+   
    ;; SYSTEM DEFINITION
    #:REGISTER-SYSDEFS #:define-system #:undefine-system
 
@@ -550,16 +551,18 @@ download file for this system and will be checked when a system is installed."))
 
 
 (defmethod print-object ((system component) stream)
-  (let ((my-name (name-of system)))
+  (flet ((name-and-version ()
+           (let ((my-name (name-of system)))
+             (if (patch-version-of system)
+                 (format stream "~S ~A (patched from ~A)" my-name
+                         (version-string (patch-version-of system))
+                         (version-string (version-of system)))
+                 (format stream "~S ~A" my-name
+                         (version-string (version-of system)))))))
     (if *print-escape*
-	(print-unreadable-object (system stream :type t :identity t)
-          (if (patch-version-of system)
-              (format stream "~S ~A (patched from ~A)" my-name
-                      (version-string (patch-version-of system))
-                      (version-string (version-of system)))
-              (format stream "~S ~A" my-name
-                      (version-string (version-of system)))))
-        (format stream "~A" my-name))))
+        (print-unreadable-object (system stream :type t :identity t)
+          (name-and-version))
+        (name-and-version))))
 
 (defmethod documentation ((comp component) (type t))
   (doc comp))
@@ -579,7 +582,6 @@ download file for this system and will be checked when a system is installed."))
 
 (defmethod name-of ((action action))
   (class-name (class-of action)))
-
 
 (defgeneric coerce-to-action (thing &rest initargs)
   (:documentation "Converts THING (a class designator) into an action")
@@ -658,7 +660,7 @@ download file for this system and will be checked when a system is installed."))
                                     (apply #'check-supported-p x))
                                 (supports-of (component-of c)))))))
 
-(define-condition component-not-present (sysdef-error)
+(define-condition missing-component (sysdef-error)
   ((component :reader component-of :initarg :component))
   (:report (lambda (c s)
              (format s "Component ~A does not exist.~%" (input-file (component-of c))))))
@@ -1068,30 +1070,20 @@ This adds various keywords to the system which are used when mb:search'ing throu
 
 
 ;; Development Mode
-;; We need to make sure that we remove the trailing (fasl-path) folders from the load-pathname since
-;; the output path for custom sysdef files is <location>/.fasl/etc/etc/
 (defun current-directory ()
-  (directory-namestring *load-truename*))
+  (pathname (directory-namestring *load-truename*)))
 
-(defun pathname-without (pathname dirs)
-  (let ((all-dirs (pathname-directory pathname))
-        (fasl-dirs (pathname-directory dirs)))
-    (let ((mismatch (mismatch all-dirs fasl-dirs :from-end t :test 'string=)))
-      (make-pathname :directory (if mismatch (subseq all-dirs 0 mismatch) all-dirs)
-                     :defaults pathname))))
+(defun setup-development-system-path (system)
+  (when (development-mode system)
+    (setf (pathname-of system) (current-directory))))
 
 (defmethod process-option :after ((system system) (key (eql :development)) &rest data)
-  (when-let (value (first data))
-    (setf (pathname-of system) (pathname-without (current-directory) (fasl-path system)))))
+  (setup-development-system-path system))
 
 ;; This also needs to run after initialize-instance in case *default-development-mode* is bound to true
-;; This isn't exactly how i pictured this all working :(
-;; removing the fasl-path from the end of pathname just doesn't sit well with me, this is also
-;; a sympton of the larger problem where compilation of sysdef files does not honour *fasl-output-root*
 (defmethod initialize-instance :after ((system system) &rest initargs &key)
   (declare (ignore initargs))
-  (when (development-mode system)
-    (setf (pathname-of system) (pathname-without (current-directory) (fasl-path system)))))
+  (setup-development-system-path system))
 
 
 
@@ -1120,7 +1112,7 @@ This adds various keywords to the system which are used when mb:search'ing throu
 
 (defun create-comparable-version (speca specb &aux (size (max (length speca) (length specb))))
   (values (map-into  (make-list size :initial-element 0)
-                     #'identity speca)
+                     #'identity speca) ;
           (map-into  (make-list size :initial-element 0)
                      #'identity specb)))
 
@@ -1283,40 +1275,39 @@ This adds various keywords to the system which are used when mb:search'ing throu
   (let ((sans (remove-if-not #'alphanumericp string)))
     (map-into (make-string (min 10 (length sans)) :element-type 'base-char) 'identity sans)))
 
-(defgeneric fasl-path (system)
-  (:method ((system t))
+(defgeneric fasl-directory (component)
+  (:method ((component component)) ".fasl"))
+ 
+(defgeneric fasl-path (component)
+  (:method ((component component))
    (make-pathname :directory (cons :relative
                                    (mapcar 'string-downcase
-                                           (list ".fasl" (legalify (software-type))
+                                           (list (fasl-directory component)
+                                                 (legalify (software-type))
                                                  (legalify (lisp-implementation-type))
                                                  (legalify (lisp-implementation-version))))))))
 
 
 ;; While this is remarkably similar to component-pathname we keep them in 2 different methods to
 ;; allow for seperate customization on file location and the output of FASL's
+
 (defgeneric output-file (component)
   (:method ((component component)) nil)
   (:method ((sys null)) (merge-pathnames (make-pathname :version :newest)
                                          (or *fasl-output-root* *systems-path*)))
-  (:method ((system system))
-   (merge-pathnames (make-pathname :directory (list :relative (version-string (version-of system))))
-                    (call-next-method)))
-  (:method :around ((module module))
-   (or (pathname-of module)
-       (call-next-method)))
+  (:method ((system module))
+   (or (output-pathname-of system) (component-pathname system)))
 
-  (:method ((module module))
-   (merge-pathnames (make-pathname :directory (module-directory module))
-                    (output-file (parent-of module))))
   (:method :around ((file file))
    (or (output-pathname-of file)
        (compile-file-pathname (merge-pathnames (fasl-path file) (call-next-method file)))))
+  
   (:method ((file file)) ;;what about the rest of the components. version etc.
    (merge-pathnames (make-pathname :type (file-type file)
                                    :name (string-downcase (name-of file)))
                     (output-file (parent-of file)))))
 
-
+  
 (defgeneric output-write-date (component)
   (:method ((component file))
    (file-write-date (output-file component))))
@@ -1493,9 +1484,13 @@ and have a last compile time which is greater than the last compile time of COMP
 
 
 ;; AND THE EXECUTE METHODS THEMSELVES
+(defmethod installablep ((system system))
+  (provider-of system))
+
 (defmethod execute :before ((system system) (action file-action))
   (unless (component-exists-p system)
-    (restart-case (error 'system-not-installed :system system)
+    (restart-case (when (installablep system)
+                    (error 'system-not-installed :system system))
       (install () :report "Install" (execute system 'install-action)))))
 
 (defmethod execute :before ((component component) (action action))
@@ -1505,11 +1500,12 @@ and have a last compile time which is greater than the last compile time of COMP
 
 
 (defgeneric component-exists-p (component)
-  (:method ((component file))
-   (probe-file (input-file component)))
-  (:method ((module module))
-   (every 'component-exists-p (all-files module))))
-   
+  (:documentation "Returns T if the component is present on the file system.")
+  (:method ((component module))
+   ;; clisp doesn't support probe-file on directories
+   (not (null (directory (component-pathname component)))))
+  (:method ((component component))
+   (probe-file (component-pathname component))))
 
 (defgeneric component-output-exists-p (component)
   (:method ((component source-file))
@@ -1565,7 +1561,15 @@ and have a last compile time which is greater than the last compile time of COMP
   (:method ((file lisp-source-file))
    (ensure-directories-exist (output-file file))))
 
+(defmethod missing-component ((component component))
+  (error 'missing-component :component component))
+
+(defmethod ensure-existence-of ((component component))
+  (unless (component-exists-p component)
+    (missing-component component)))
+
 (defmethod execute :before ((comp lisp-source-file) (action source-file-action))
+  (ensure-existence-of comp)
   (ensure-output-path-exists comp))
 
 (defmethod execute around ((file lisp-source-file) (action load-action))
@@ -1575,7 +1579,7 @@ and have a last compile time which is greater than the last compile time of COMP
                                (:load-source (make-restarter 'load-source)))))
     (handler-case (call-next-method)
       ;; invalid FASL recompilation
-      (#+sbcl sb-ext:invalid-fasl #+allegro excl::file-incompatible-fasl-error
+      (#+sbcl sb-ext:invalid-fasl #+allegro (or excl::file-incompatible-fasl-error file-error)
         #+lispworks conditions:fasl-error #+cmu ext:invalid-fasl
         #-(or sbcl allegro lispworks cmu) fasl-error ()
         (execute file 'clean-action)
@@ -1610,13 +1614,7 @@ and have a last compile time which is greater than the last compile time of COMP
   (with-compilation-unit ()
     (call-next-method)))
 
-(defgeneric ensure-file (component)
-  (:method ((component component))
-   (unless (component-exists-p component)
-     (error 'component-not-present :component component))))
-
 (defmethod execute ((component lisp-source-file) (action compile-action))
-  (ensure-file component)
   (multiple-value-bind (output-file warnings-p failure-p)
       (compile-file (input-file component)
                     :output-file (output-file component)
@@ -2063,8 +2061,7 @@ but version ~A is already loaded." (version-string system) (name-of system)
         :collect (create-component module (name-of file)
                                    (default-component-class-of module)
                                    `((:pathname ,file)
-                                     (:development-systems ,(development-mode-of module))
-                                     (:output-pathname ,(merge-pathnames (fasl-path file) (compile-file-pathname file)))))))
+                                     (:development-systems ,(development-mode-of module))))))
 
 (defun wildcard-searcher (path &key (development-mode t))
   (make-instance 'wildcard-sysdef-searcher :search-directory path :development-mode development-mode))
@@ -2072,6 +2069,30 @@ but version ~A is already loaded." (version-string system) (name-of system)
 (defclass sysdef-file (lisp-source-file)
   ((development-systems-p :initarg :development-systems :initform nil :accessor development-systems-p
                           :documentation "Controls whether systems defined by this sydesf file will be created in development mode")))
+
+(defmethod fasl-directory ((sysdef-file sysdef-file))
+  ".sysdef")
+
+(defun sysdef-file-fasl-root-dir (file)
+  (merge-pathnames (make-pathname :directory (append '(:relative "system-definitions")
+                                                     (cdr (pathname-directory (enough-namestring (component-pathname file)
+                                                                                                 *sysdef-path*)))))
+                   *fasl-output-root*))
+
+(defmethod fasl-path ((file sysdef-file))
+  (if (development-systems-p file)
+      #P""
+      (call-next-method)))
+
+(defmethod output-file ((file sysdef-file))
+  (flet ((root-dir ()
+           (if *fasl-output-root*
+               (sysdef-file-fasl-root-dir file)
+               *sysdef-path*)))
+    (if (development-systems-p file)
+        (compile-file-pathname (input-file file))
+        (merge-pathnames (merge-pathnames (root-dir))
+                         (call-next-method)))))
 
 (defmethod execute ((file sysdef-file) (action load-action))
   (let ((*default-development-mode* (development-systems-p file)))
@@ -2277,7 +2298,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 2 2)
+  (:version 0 2 6)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))

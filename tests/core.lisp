@@ -342,13 +342,22 @@ a list created by extracting SLOT-NAMES from form."
 
              (let ((components (create-wildcard-components component (directory (wildcard-pathname-of component)))))
                (mapcar #'(lambda (comp)
-                           (assert-equal (compile-file-pathname (pathname-of comp))
-                                         (pathname-without (output-pathname-of comp) (fasl-path comp)))
+                           (assert-equal nil
+                                         (output-pathname-of comp))
                            (assert-eql (development-mode-of component) (development-systems-p comp)))
                        components)))))
     (test-once nil)
     (test-once t)))
 
+(define-test output-pathname-test
+  (with-test-systems ()
+    (let ((sys (define-test-system :output-test ()
+                 (:components "foo" ("bar" (:output-pathname "/baz/bar.fas")))
+                 (:output-pathname #P"/tmp/"))))
+      (assert-equal (merge-pathnames (fasl-path (find-component sys "foo"))
+                                     (compile-file-pathname #P"/tmp/foo.lisp"))
+                    (output-file (find-component sys "foo")))
+      (assert-equal "/baz/bar.fas" (output-file (find-component sys "bar"))))))
 
 (defclass ordering-file (testing-file)
   ((completed-actions :accessor completed-actions-of :initform ())))
