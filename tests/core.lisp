@@ -650,6 +650,13 @@ a list created by extracting SLOT-NAMES from form."
       (undefine-system first)
       (assert= 1 (length (systems-matching (constantly t)))))))
 
+(define-test case-tests ()
+  (with-test-systems ()
+    (let ((sys (define-test-system :case-test ()
+                 (:components "Foo" "bar" :baz))))
+      (assert-equal '("Foo" "bar" "baz")
+                    (mapcar (lambda (x) (pathname-name (component-pathname x)))
+                            (all-files sys))))))
 ;(mb:test :mb.sysdef)
                      
 (princ (run-tests))

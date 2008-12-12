@@ -1246,6 +1246,10 @@ This adds various keywords to the system which are used when mb:search'ing throu
              nil)
          (cons :relative (mapcar 'string-downcase (mklist name)))))))
 
+(defgeneric component-name (thing)
+  (:method ((thing string)) thing)
+  (:method ((thing symbol)) (string-downcase thing)))
+
 (defgeneric component-pathname (file)
   (:method :around ((obj component))
    (or (pathname-of obj) (call-next-method)))
@@ -1258,7 +1262,7 @@ This adds various keywords to the system which are used when mb:search'ing throu
    (merge-pathnames (make-pathname :directory (module-directory module))
                     (component-pathname (parent-of module))))
   (:method ((file file)) ;;what about the rest of the components. version etc.
-   (merge-pathnames (make-pathname :type (file-type file) :name (string-downcase (name-of file)))
+   (merge-pathnames (make-pathname :type (file-type file) :name (component-name (name-of file)))
                     (component-pathname (parent-of file)))))
 
 
