@@ -366,7 +366,7 @@ a list created by extracting SLOT-NAMES from form."
 
         (assert-equal (merge-pathnames (fasl-path (find-component sys "foo"))
                                        (make-pathname :version :newest :name "foo" :type (pathname-type (compile-file-pathname "foo.lisp"))
-                                                      :directory '(:absolute "tmp" "for-test-system")))
+                                                      :directory '(:absolute "tmp" "for-test-system" "0.0.1")))
                       (output-file (find-component sys "foo")))
         (assert-equal "/baz/bar.fas" (output-file (find-component sys "bar")))))))
 

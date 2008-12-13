@@ -1303,6 +1303,11 @@ This adds various keywords to the system which are used when mb:search'ing throu
    (or (output-pathname-of module)
        (merge-pathnames (make-pathname :directory (module-directory module))
                         (output-file (parent-of module)))))
+  
+  (:method ((system system))
+   (or (output-pathname-of system)
+       (merge-pathnames (make-pathname :directory (list :relative (version-string (version-of system))))
+                        (call-next-method))))
 
   (:method :around ((file file))
    (or (output-pathname-of file)
