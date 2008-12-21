@@ -827,13 +827,16 @@ them against component."))
            ((and if-fails (symbolp if-fails)) (funcall if-fails comp))
            (t (error "~S is an invalid option for :IF-SUPPORTS-FAILS." if-fails))))))
 
+(defmethod component-supported-p ((component component))
+  (every #'(lambda (supports)
+             (apply #'check-supported-p supports))
+         (supports-of component)))
+
 (defgeneric supportedp (component)
   (:documentation "Returns true if component is supported.")
   (:method ((component component))
    "The default method on COMPONENT runs check-supported-p on the entries of the support slot." 
-   (if (every #'(lambda (supports)
-                  (apply #'check-supported-p supports))
-              (supports-of component))
+   (if (component-supported-p component)
        t
        (supports-failed component))))
 
@@ -1097,18 +1100,21 @@ This adds various keywords to the system which are used when mb:search'ing throu
   (:method ((comp component))
    (version-string (or (patch-version-of comp) (version-of comp)))))
 
-(defun version-satisfies (spec against-spec)
-  (let ((version (coerce-to-version spec))
-        (against (coerce-to-version against-spec)))
-    (assert (exact-version-spec-p version) (version)
-      "must designate an exact version")
-    (cond ((exact-version-spec-p against)
-           (version= version against))
-          ((bounding-version-spec-p against)
-           (funcall (version-test (first against)) version (rest against)))
-          ((complex-version-spec-p against)
-           (process-complex-spec version against))
-          (t (error "Invalid version spec ~S." against)))))
+(defgeneric version-satisfies-p (spec against-spec)
+  (:method ((spec t) (against-spec t))
+   (let ((version (coerce-to-version spec))
+         (against (coerce-to-version against-spec)))
+     (assert (exact-version-spec-p version) (version)
+       "must designate an exact version")
+     (cond ((exact-version-spec-p against)
+            (version= version against))
+           ((bounding-version-spec-p against)
+            (funcall (version-test (first against)) version (rest against)))
+           ((complex-version-spec-p against)
+            (process-complex-spec version against))
+           (t (error "Invalid version spec ~S." against)))))
+  (:method ((spec t) (against-spec null))
+   t))
 
 (defun create-comparable-version (speca specb &aux (size (max (length speca) (length specb))))
   (values (map-into  (make-list size :initial-element 0)
@@ -1157,14 +1163,14 @@ This adds various keywords to the system which are used when mb:search'ing throu
 (defun process-complex-spec (version against)
   (ecase (first against)
     (and (every (lambda (sub)
-                  (version-satisfies version sub))
+                  (version-satisfies-p version sub))
                 (rest against)))
     (or (some (lambda (sub)
-                (version-satisfies version sub))
+                (version-satisfies-p version sub))
               (rest against)))
     (not (assert (eql 1 (length (rest against))) ()
            "NOT specifiers only take 1 argument")
-        (not (version-satisfies version (first (rest against)))))))
+        (not (version-satisfies-p version (first (rest against)))))))
 
 ;;; COERCE-TO-VERSION
 ;; We expect versions to be
@@ -1860,12 +1866,17 @@ module to be the parent of new-module with version VERSION."
    (declare (ignore args errorp))
    system)
   (:method (name &rest args &key (errorp t) &allow-other-keys)
-   (let ((sys (loop :for finder :in *finders*
-                    :thereis (apply finder name :allow-other-keys t args))))
-     (cond (sys sys)
-           (errorp (error 'no-such-component :name name))
-           (t nil)))))
-
+   (flet ((%find-system ()
+            (dolist (finder *finders*)
+              (multiple-value-bind (supported)
+                  (apply finder name :allow-other-keys t args)
+                (when supported
+                  (return supported))))))
+     (let ((sys (%find-system)))
+       (cond (sys sys)
+             (errorp (error 'no-such-component :name name))
+             (t nil))))))
+   
 (defun find-component (&rest args)
   (labels ((to-component (parent thing)
              (if (and (null parent) (typep thing 'component))
@@ -1880,13 +1891,12 @@ module to be the parent of new-module with version VERSION."
 
 
 (defgeneric %find-component (parent name &key errorp version)
-  (:method ((parent (eql nil)) name &key (errorp t) version)
-   (find-system name :errorp errorp :version version))
+  (:method ((parent (eql nil)) name &key (errorp t) (version nil version-supp-p))
+   (apply 'find-system name :errorp errorp (when version-supp-p (list :version version))))
   (:method ((parent module) name &key (errorp t) version) ;; Version is unused here
-   ;; we use slot-value instead of components-of to allow
    (declare (ignore version))
    (or (find name (slot-value parent 'components) :key #'name-of :test #'equalp)
-       (when errorp (error  'no-such-component :name name :parent parent)))))
+       (when errorp (error 'no-such-component :name name :parent parent)))))
 
 (deftype system-designator ()
   "The type system-designator denotes the set of lisp objects which can be used to lookup a system.
@@ -1908,7 +1918,7 @@ It is either a string or symbol designating the system with that name, or a syst
 (defun systems-for (name &key (version '(>= 0)))
   (sort (systems-matching (lambda (sys)
                             (and (name= (name-of sys) name)
-                                 (version-satisfies (version-of sys) version))))
+                                 (version-satisfies-p (version-of sys) version))))
         'version>
         :key 'version-of))
 
@@ -1948,11 +1958,19 @@ has been loaded into the the current Lisp image or nil.")
 but version ~A is already loaded." (version-string system) (name-of system)
               (version-string loaded-version)))))
 
+(defun applicable-systems (systems version-supp-p)
+  (if version-supp-p
+      systems
+      (remove-if #'(lambda (system)
+                     (or (not (component-exists-p system))
+                         (not (component-supported-p system))))
+                 systems)))
+
 (defun default-system-finder (name &rest args &key (errorp t) (version '(>= 0) version-supp-p)
                                    &allow-other-keys)
   (declare (ignore args))
   (unless version (setf version '(>= 0)))
-  (let ((possible-systems (systems-for name :version version))
+  (let ((possible-systems (applicable-systems (systems-for name :version version) version-supp-p))
         (loaded-version (system-loaded-p name)))
     ;;    nothing loaded so try and load the first system we can get
     ;;    (systems-for returns systems sorted by version>)
@@ -1970,7 +1988,7 @@ but version ~A is already loaded." (version-string system) (name-of system)
             ((and loaded-version (not version-supp-p)) (system-with-version loaded-version))
 
             ;; system is loaded and we satisfy the requested version
-            ((and loaded-version version-supp-p (version-satisfies loaded-version version))
+            ((and loaded-version version-supp-p (version-satisfies-p loaded-version version))
              (system-with-version loaded-version))
 
             ;; At this point our currently loaded system does not satisfy version

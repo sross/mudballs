@@ -30,6 +30,10 @@ Bindings are the same as in flet/labels"
 
 
 ;;; Utils Macros and Functions
+(defclass testing-system (system) ())
+(defmethod component-exists-p ((system testing-system))
+  t)
+
 (defclass testing-file (lisp-source-file)
   ((compile-time :accessor last-compile-time :initform 0))
   (:documentation "A Component which does nothing when an action is applied to it."))
@@ -97,13 +101,13 @@ a list created by extracting SLOT-NAMES from form."
      ,@body))
 
 (defun deprecated-systems ()
-  (list (create-component nil :test-deprecated 'system
+  (list (create-component nil :test-deprecated 'testing-system
                           '((:deprecated :replacement-system)))
-        (create-component nil :test-deprecated2 'system '((:deprecated t)))))
+        (create-component nil :test-deprecated2 'testing-system '((:deprecated t)))))
 
 (defun default-test-systems ()
-  (let ((sys1 (create-component nil :test 'system '((:documentation "Test System"))))
-        (sys2 (create-component nil :test2 'system))
+  (let ((sys1 (create-component nil :test 'testing-system '((:documentation "Test System"))))
+        (sys2 (create-component nil :test2 'testing-system))
         )
     ;;sys1
     (add-component-to (create-component sys1 "foo" 'testing-file) sys1)
@@ -114,9 +118,9 @@ a list created by extracting SLOT-NAMES from form."
     (list sys1 sys2 )))
 
 (defun extra-test-systems ()
-  (let ((sys (create-component nil :test 'system '((:version 0 8 0))))
-        (sys2 (create-component nil :test 'system '((:version 0 9 0))))
-        (dep (create-component nil :dep 'system '((:needs (:test :version (0 8 0)))))))
+  (let ((sys (create-component nil :test 'testing-system '((:version 0 8 0))))
+        (sys2 (create-component nil :test 'testing-system '((:version 0 9 0))))
+        (dep (create-component nil :dep 'testing-system '((:needs (:test :version (0 8 0)))))))
     (add-component-to (create-component sys "foo" 'testing-file) sys)
     (add-component-to (create-component sys :module1 'module) sys)
 
@@ -125,8 +129,8 @@ a list created by extracting SLOT-NAMES from form."
     (list sys sys2 dep)))
 
 (defun dependent-test-systems ()
-  (let ((sys (create-component nil :needs-test 'system '((:needs :test))))
-        (sys2 (create-component nil :needs-test2 'system '((:uses-macros-from :test)))))
+  (let ((sys (create-component nil :needs-test 'testing-system '((:needs :test))))
+        (sys2 (create-component nil :needs-test2 'testing-system '((:uses-macros-from :test)))))
 
     (add-component-to (create-component sys "foo" 'testing-file) sys)
     (add-component-to (create-component sys2 "foo" 'testing-file) sys2)
@@ -178,10 +182,10 @@ a list created by extracting SLOT-NAMES from form."
 ;; some basic system definition tests
 (define-test fn-define-system
   (with-test-systems ()
-    (fn-define-system :new 'system nil nil)
+    (fn-define-system :new 'testing-system nil nil)
     (assert= 3 (length *systems*))
-    (assert-error 'no-such-component (fn-define-system '(:new2 "foo") 'system (find-component :test) nil))
-    (fn-define-system '(:new "foo") 'system (find-component :test) nil)
+    (assert-error 'no-such-component (fn-define-system '(:new2 "foo") 'testing-system (find-component :test) nil))
+    (fn-define-system '(:new "foo") 'testing-system (find-component :test) nil)
     (assert= 3 (length *systems*))
     (assert= 1 (length (components-of (find-system :new))))))
 
@@ -296,7 +300,7 @@ a list created by extracting SLOT-NAMES from form."
 
 (defmacro define-test-system (name super &body body)
   `(progn (push ,name *builtin-systems*)
-     (define-system ,name ,super ,@body)))
+     (define-system ,name ,(or super '(testing-system)) ,@body)))
 
 (define-test static-file-test
   (with-test-systems ()
@@ -423,6 +427,42 @@ a list created by extracting SLOT-NAMES from form."
       (assert-true (check-supported-p :feature '(:or :mswindows :macosx) :sbcl))
       (assert-true (check-supported-p :feature '(:or :lispworks (:and :sbcl :mswindows (:not :ppc))))))))
 
+
+(defmacro with-gensyms ((&rest vars) &body body)
+  `(let (,@(loop for var in vars collect `(,var (gensym))))
+     ,@body))
+
+(defmacro has-restart (condition name &body body)
+  "Returns true if body signals CONDITION and has a restart named NAME (evaluated)."
+  (with-gensyms (gblock gvar)
+    `(block ,gblock
+       (handler-bind ((,condition (lambda (,gvar)
+                                    (when (find-restart ,name ,gvar)
+                                      (return-from ,gblock t)))))
+         (progn ,@body
+           nil)))))
+                                  
+
+(defun always-nil (&rest args)
+  (declare (ignore args))
+  nil)
+
+(define-test supportedp
+  (dflet ((os () :mac)
+          (implementation () :sbcl)
+          (platform () :x86))
+    (assert-error 'component-not-supported (supportedp (create-component nil :test 'testing-system
+                                                                         '((:supports (:os :mswindows))))))
+    (assert-true (has-restart component-not-supported 'continue (supportedp (create-component nil :test 'testing-system
+                                                                                              '((:supports (:os :mswindows)))))))
+    (assert-true (null (supportedp (create-component nil :test 'testing-system
+                                                     '((:supports (:os :mswindows))
+                                                       (:if-supports-fails always-nil))))))
+    (assert-true (supportedp  (create-component nil :test 'testing-system)))
+    (assert-error 'simple-error (supportedp (create-component nil :test 'testing-system
+                                                              '((:supports (:os :mswindows))
+                                                                (:if-supports-fails nil)))))))
+
 (defclass ordered-test-module (wildcard-module)
   ()
   (:default-initargs :ordered 'integer-string<))
@@ -536,7 +576,7 @@ a list created by extracting SLOT-NAMES from form."
       (with-open-stream (stream (make-string-input-stream fake-file))
         (assert-error 'reader-error (contents-of stream))))))
 
-(defclass preferences-system (system) ())
+(defclass preferences-system (testing-system) ())
 (defmethod preferences-of ((system preferences-system))
   '((:test-pref "my-preferences")))
 
