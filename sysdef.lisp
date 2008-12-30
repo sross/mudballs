@@ -65,7 +65,7 @@
    #:SYSDEF-CONDITION #:SYSDEF-ERROR #:SYSDEF-WARNING #:NO-SUCH-COMPONENT #:COMPONENT-NOT-SUPPORTED
    #:DEPRECATED-SYSTEM #:FASL-ERROR #:FASL-OUT-OF-DATE #:FASL-DOES-NOT-EXIST
    #:COMPILATION-ERROR #:COMPILE-FAILED #:COMPILE-WARNED #:DUPLICATE-COMPONENT #:SYSTEM-REDEFINED
-   #:SYSTEM-NOT-INSTALLED #:MISSING-COMPONENT
+   #:SYSTEM-NOT-INSTALLED #:MISSING-COMPONENT #:NO-INSTALLED-COMPONENT #:SYSTEM-ALREADY-LOADED
    
    ;; SYSTEM DEFINITION
    #:REGISTER-SYSDEFS #:define-system #:undefine-system
@@ -716,6 +716,23 @@ download file for this system and will be checked when a system is installed."))
   (:report (lambda (c s)
              (format s "Redefining ~A version ~A." (name-of c) (version-of c)))))
 
+(define-condition no-installed-component (sysdef-error)
+  ((name :initarg :name :reader name)
+   (version :initarg :version :reader version))
+  (:report (lambda (c s)
+             (format s "No installed component named ~S found to match version ~S."
+                     (name c) (version c)))))
+
+(define-condition system-already-loaded (sysdef-error)
+  ((name :initarg :name :reader name-of)
+   (requested-version :initarg :requested-version :reader requested-version-of)
+   (loaded-version :initarg :loaded-version :reader loaded-version-of))
+  (:report (lambda (c s)
+             (format s "Attempting to perform an action upon version ~A of ~A ~
+but version ~A is already loaded." (version-string (requested-version-of c)) (name-of c)
+                     (version-string (loaded-version-of c))))))
+
+
 
 ;;;; CORE EXECUTION PROTOCOL
 (defgeneric process-options (component options)
@@ -1307,11 +1324,13 @@ This adds various keywords to the system which are used when mb:search'ing throu
                                          (or *fasl-output-root* *systems-path*)))
   (:method ((module module))
    (or (output-pathname-of module)
+       (pathname-of module)
        (merge-pathnames (make-pathname :directory (module-directory module))
                         (output-file (parent-of module)))))
   
   (:method ((system system))
    (or (output-pathname-of system)
+       (pathname-of system)
        (merge-pathnames (make-pathname :directory (list :relative (version-string (version-of system))))
                         (call-next-method))))
 
@@ -1338,7 +1357,10 @@ This adds various keywords to the system which are used when mb:search'ing throu
   (:method ((comp component) &key (type 'file))
    (when (typep comp type) (list comp))))
 
-
+(defmacro do-components ((var system &key) &body body)
+  "Applies BODY for each component in SYSTEM with VAR bound to the component in question."
+  `(dolist (,var (components-of ,system))
+     ,@body))
 
 
 ;;; APPLYING ACTIONS TO COMPONENTS
@@ -1414,11 +1436,15 @@ and have a last compile time which is greater than the last compile time of COMP
 (defgeneric time-of (component action)
   (:documentation "Gives the last(universal-time) that action was applied to component (or nil)")
   (:method ((component component) (action action))
-   (gethash (class-name (class-of action)) (operation-times component))))
+   (time-of component (class-name (class-of action))))
+  (:method ((component component) (action symbol))
+   (gethash action (operation-times component))))
 
 (defgeneric (setf time-of) (value component action)
   (:method (value (component component) (action action))
-   (setf (gethash (class-name (class-of action)) (operation-times component))
+   (setf (time-of component (class-name (class-of action))) value))
+  (:method (value (component component) (action symbol))
+   (setf (gethash action (operation-times component))
          value)))
 
 (defmethod time-of ((component file) (action compile-action))
@@ -1711,15 +1737,16 @@ for define-system. This has only been tested with Lispworks at the moment. Sorry
 (defmacro do-systems ((var) &body body)
   "Executes body for each system defined with VAR bound to an instance of SYSTEM."
   `(dolist (,var *systems*)
+     (declare (ignorable ,var))
      ,@body))
 
 (defun map-systems (fn)
   "Applies fn to each system available."
   (mapcar fn *systems*))
 
-(defun systems-matching (fn)
+(defun systems-matching (fn &key (key #'identity))
   "Returns all systems for which (funcall FN system) returns true."
-  (remove-if-not fn *systems*))
+  (remove-if-not fn *systems* :key key))
 
 ;;; SYSTEM CREATION AND LOCATION
 (defun undefine-system (system)
@@ -1787,7 +1814,6 @@ Systems are unique on a name (tested using string-equal), version basis.
 
 (defun subsystem-definition-p (name)
   (typep name 'subsystem-definition))
-
 
 (defun find-system-for (name-list version)
   "Takes a list of (system-name modules* new-module) and finds the appropriate
@@ -1861,21 +1887,50 @@ module to be the parent of new-module with version VERSION."
           (slot-makunbound to name)))))
 
 ;; Locating components
+(defun %find-system (name version &key (errorp t))
+  (labels ((use (thing) (return-from %find-system thing)))
+    (let* ((loaded-system (system-loaded-p name)))
+      (when (and loaded-system (version-satisfies-p (version-of loaded-system) version))
+        (use loaded-system))
+      
+      (let ((uninstalled ()))
+        (dolist (finder *finders*)
+          (multiple-value-bind (installed-systems other-systems)
+              (funcall finder name :version version)
+            ;; if a specific version is requested return the first one we find
+            ;; whether it is installed or not.
+            (cond ((and version (or installed-systems other-systems))
+                   (use (or (first installed-systems) (first other-systems))))
+
+                  ;; if we find a supported system then use that 
+                  (installed-systems (use (first installed-systems)))
+
+                  ;; otherwise collect the uninstalled systems for use later
+                  (t (setf uninstalled (sort (union uninstalled other-systems) #'version> :key 'version-of))))))
+
+        ;; If a version was not specified we use the first uninstalled system
+        (unless version
+          (when uninstalled
+            (use (first uninstalled))))
+
+        ;; by this point we have no supported systems available and a list of uninstalled and uninstalled
+        ;; systems. We no offer a restart to pick such a system.
+        (when errorp
+          (restart-case (when (and version uninstalled)
+                          (error 'no-installed-component :name name :version version))
+            (use-uninstalled ()
+              :report "Use an uninstalled version of the system"
+              (first uninstalled))))))))
+
 (defgeneric find-system (name &rest args &key errorp &allow-other-keys)
   (:method ((system system) &rest args &key errorp)
    (declare (ignore args errorp))
    system)
-  (:method (name &rest args &key (errorp t) &allow-other-keys)
-   (flet ((%find-system ()
-            (dolist (finder *finders*)
-              (multiple-value-bind (supported)
-                  (apply finder name :allow-other-keys t args)
-                (when supported
-                  (return supported))))))
-     (let ((sys (%find-system)))
-       (cond (sys sys)
-             (errorp (error 'no-such-component :name name))
-             (t nil))))))
+  (:method (name &rest args &key (errorp t) (version nil version-supplied?) &allow-other-keys)
+   (let ((sys (%find-system name (if version-supplied? version nil) :errorp errorp)))
+     (cond (sys sys)
+           (errorp (apply 'error 'no-such-component :name name (when version-supplied? (list :version version))))
+           (t nil)))))
    
 (defun find-component (&rest args)
   (labels ((to-component (parent thing)
@@ -1934,10 +1989,12 @@ has been loaded into the the current Lisp image or nil.")
 
 (defgeneric (setf system-loaded-p) (newval designator)
   (:method ((sys system) designator) 
-   (setf (gethash (normalize designator) *loaded-versions*)
-         (version-of sys)))
+   (setf (gethash (normalize designator) *loaded-versions*) sys))
   (:method ((name null) designator)
-   (remhash (normalize designator) *loaded-versions*)))
+   (let ((system (gethash (normalize designator) *loaded-versions*)))
+     (do-components (component system)
+       (setf (time-of component 'load-action) nil))
+     (remhash (normalize designator) *loaded-versions*))))
 
 (defmethod execute :after ((system system) (action load-action))
   (setf (system-loaded-p (name-of system)) system)
@@ -1952,54 +2009,20 @@ has been loaded into the the current Lisp image or nil.")
        (execute sys 'load-action)))))
 
 (defmethod execute :before ((system system) (action source-file-action))
-  (let ((loaded-version (system-loaded-p (name-of system))))
-    (when (and loaded-version (not (version= (version-of system) loaded-version)))
-      (cerror "Load system anyway." "Attempting to perform an action upon version ~A of ~A ~
-but version ~A is already loaded." (version-string system) (name-of system)
-              (version-string loaded-version)))))
+  (let ((loaded-system (system-loaded-p (name-of system))))
+    (when (and loaded-system (not (version= (version-of system) (version-of loaded-system))))
+      (cerror "Load system anyway." 'system-already-loaded :name (name-of system)
+              :loaded-version (version-of loaded-system) :requested-version (version-of system))
+      (setf (system-loaded-p (name-of system)) nil
+            (time-of loaded-system (make-instance 'load-action)) nil))))
 
-(defun applicable-systems (systems version-supp-p)
-  (if version-supp-p
-      systems
-      (remove-if #'(lambda (system)
-                     (or (not (component-exists-p system))
-                         (not (component-supported-p system))))
-                 systems)))
-
-(defun default-system-finder (name &rest args &key (errorp t) (version '(>= 0) version-supp-p)
-                                   &allow-other-keys)
-  (declare (ignore args))
-  (unless version (setf version '(>= 0)))
-  (let ((possible-systems (applicable-systems (systems-for name :version version) version-supp-p))
-        (loaded-version (system-loaded-p name)))
-    ;;    nothing loaded so try and load the first system we can get
-    ;;    (systems-for returns systems sorted by version>)
-    (labels ((system-with-version (version)
-               (or (find version possible-systems :test 'version= :key 'version-of)
-                   (no-component version)))
-             (no-component (&optional version)
-               (error 'no-such-component :name name :version (when version-supp-p version))))
-      (cond ((not loaded-version)
-             (or (first possible-systems) 
-                 (when errorp (error 'no-such-component :name name
-                                     :version (if version-supp-p version)))))
-          
-            ;; system is loaded but version is not specified so keep our current version
-            ((and loaded-version (not version-supp-p)) (system-with-version loaded-version))
-
-            ;; system is loaded and we satisfy the requested version
-            ((and loaded-version version-supp-p (version-satisfies-p loaded-version version))
-             (system-with-version loaded-version))
-
-            ;; At this point our currently loaded system does not satisfy version
-            ;; so if we have dont have a suitable system we signal an error (when appropriate)
-            ((not possible-systems) 
-             (error 'no-such-component :name name :version (when version-supp-p version)))
-          
-            ;; return the highest versioned system which satisfies version.
-            ;; this will be checked against the currently loaded version in an execute :before method
-            (t (first possible-systems))))))
-
+(defun default-system-finder (name &key version)
+  (loop :for system :in (systems-for name :version version)
+        :if  (component-exists-p system)
+        :collect system :into installed
+        :else :collect system :into not-installed
+        :finally (return (values installed not-installed))))
+                
 ;;; WILDCARD MODULES
 ;;; Modules which load all files in their directory.
 ;;; This is done by doing a wildcard directory search in the directory
@@ -2184,6 +2207,8 @@ loaded by functions on *custom-search-modules*."
 
 ;; CONFIG FILES
 (defclass config-file (lisp-source-file) ())
+(defmethod ensure-output-path-exists ((file config-file))
+  t)
 
 (defun config-file-exists-p (sys)
   (and (config-file-of sys) (probe-file (config-file-of sys))))
@@ -2326,7 +2351,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 2 7)
+  (:version 0 2 13)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))

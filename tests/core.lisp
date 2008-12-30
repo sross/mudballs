@@ -30,9 +30,17 @@ Bindings are the same as in flet/labels"
 
 
 ;;; Utils Macros and Functions
-(defclass testing-system (system) ())
+(defmacro define-test-system (name super &body body)
+  `(progn (push ,name *builtin-systems*)
+     (define-system ,name ,(or super '(testing-system)) ,@body)))
+
+(defclass testing-system (system) () (:default-initargs :default-component-class 'testing-file))
 (defmethod component-exists-p ((system testing-system))
   t)
+
+(defclass uninstalled-testing-system (testing-system) ())
+(defmethod component-exists-p ((system uninstalled-testing-system))
+  nil)
 
 (defclass testing-file (lisp-source-file)
   ((compile-time :accessor last-compile-time :initform 0))
@@ -219,7 +227,7 @@ a list created by extracting SLOT-NAMES from form."
 (define-test versioned-dependency
   (with-test-systems (default-test-systems extra-test-systems)
     (assert-true (perform (find-component :dep) 'load-action))
-    (assert-equal '(0 8 0)
+    (assert-equal (find-system :test)
                   (system-loaded-p :test))))
 
 (define-test lazy-module
@@ -298,9 +306,7 @@ a list created by extracting SLOT-NAMES from form."
       (:version 0 0 2 5))
     (assert-equal '((0 0 3) (0 0 2 5) (0 0 2)) (mapcar 'version-of (systems-for :multiple)))))
 
-(defmacro define-test-system (name super &body body)
-  `(progn (push ,name *builtin-systems*)
-     (define-system ,name ,(or super '(testing-system)) ,@body)))
+
 
 (define-test static-file-test
   (with-test-systems ()
@@ -327,7 +333,7 @@ a list created by extracting SLOT-NAMES from form."
   (let* ((*custom-search-modules* ())
          (system (find-system :sysdef-definitions))
          (current-size (length (components-of system)))
-         (*custom-search-modules* (list (create-component system "sydef" 'lisp-source-file))))
+         (*custom-search-modules* (list (create-component system "sydef" 'testing-file))))
     (assert= (+ 1 current-size) (length (components-of system)))))
 
 
@@ -363,6 +369,14 @@ a list created by extracting SLOT-NAMES from form."
                     (output-file (find-component sys "foo")))
       (assert-equal "/baz/bar.fas" (output-file (find-component sys "bar"))))
 
+    (let ((sys (define-test-system :output-test2 ()
+                 (:components "foo" ("bar" (:output-pathname "/baz/bar.fas")))
+                 (:pathname #P"/tmp/"))))
+      (assert-equal (merge-pathnames (fasl-path (find-component sys "foo"))
+                                     (compile-file-pathname #P"/tmp/foo.lisp"))
+                    (output-file (find-component sys "foo")))
+      (assert-equal "/baz/bar.fas" (output-file (find-component sys "bar"))))
+
     ;; test with *fasl-output-root*
     (let ((*fasl-output-root* #P"/tmp/"))
       (let ((sys (define-test-system :for-test-system ()
@@ -374,6 +388,9 @@ a list created by extracting SLOT-NAMES from form."
                       (output-file (find-component sys "foo")))
         (assert-equal "/baz/bar.fas" (output-file (find-component sys "bar")))))))
 
+
+
+;(find-system :installer)
 (defclass ordering-file (testing-file)
   ((completed-actions :accessor completed-actions-of :initform ())))
 
@@ -395,9 +412,11 @@ a list created by extracting SLOT-NAMES from form."
                  (:default-component-class ordering-file)
                  (:serial t)
                  (:components "foo" "bar"))))
+      (perform sys 'load-action)
       (assert-true (serialp sys))
       (assert-equal '(ordering-file ordering-file)
-                    (mapcar (lambda (c) (class-name (class-of c))) (components-of sys))))))
+                    (mapcar (lambda (c) (class-name (class-of c))) (components-of sys)))
+      (assert-equal '("bar" "foo") *loaded*))))
 
 
 ;; :supports
@@ -469,7 +488,7 @@ a list created by extracting SLOT-NAMES from form."
 
 (defmethod components-of ((module ordered-test-module))
   (mapcar #'(lambda (name)
-              (create-component module name 'lisp-source-file))
+              (create-component module name 'testing-file))
           '("002" "003" "001" "004")))
 
 
@@ -484,11 +503,11 @@ a list created by extracting SLOT-NAMES from form."
 
 (defmethod components-of ((module ordered-patch-test))
   (mapcar #'(lambda (name)
-              (create-component module name 'lisp-source-file))
+              (create-component module name 'testing-file))
           '("002" "003" "001" "004")))
 
 (define-test patch-tests
-  (let* ((sys (create-component nil 'test 'system '((:version 0 1 1))))
+             (let* ((sys (create-component nil 'test 'system '((:version 0 1 1))))
          (*system-being-patched* sys))
     (patch (0 1 2))
     (assert-equal '(0 1 1) (version-of sys))
@@ -565,8 +584,6 @@ a list created by extracting SLOT-NAMES from form."
         (assert-prints "" (load-config sys))
         (assert-prints "" (load-config sys))))))
 
-
-
 (define-test contents-of
   (with-test-systems ()
     (let ((fake-file "(:featuritis t)"))
@@ -577,6 +594,7 @@ a list created by extracting SLOT-NAMES from form."
         (assert-error 'reader-error (contents-of stream))))))
 
 (defclass preferences-system (testing-system) ())
+
 (defmethod preferences-of ((system preferences-system))
   '((:test-pref "my-preferences")))
 
@@ -636,7 +654,7 @@ a list created by extracting SLOT-NAMES from form."
       (assert-equal (documentation "test" 'system) (doc sys)))))
 
 
-(defclass out-of-date-file (lisp-source-file) ())
+(defclass out-of-date-file (testing-file) ())
 (defmethod out-of-date-p ((file out-of-date-file) (action action))
   nil)
 
@@ -662,8 +680,8 @@ a list created by extracting SLOT-NAMES from form."
   (with-test-systems ()
     (assert-error 'system-redefined (define-test-system :test () ()))
     (assert-true (handler-case (define-test-system :new-system () ())
-                   (condition (c) nil)
-                   (:no-error (val) t)))))
+                   (condition (c) (declare (ignore c)) nil)
+                   (:no-error (val) (declare (ignore val)) t)))))
 
 
 (define-test custom-method-combination-test
@@ -697,6 +715,35 @@ a list created by extracting SLOT-NAMES from form."
       (assert-equal '("Foo" "bar" "baz")
                     (mapcar (lambda (x) (pathname-name (component-pathname x)))
                             (all-files sys))))))
+
+(defun lookup-test-systems ()
+  (let ((sys1 (create-component nil :lookup-test 'testing-system '((:version 0 0 1))))
+        (sys2 (create-component nil :lookup-test 'testing-system '((:version 0 1 0))))
+        (sys3 (create-component nil :lookup-test 'testing-system '((:version 1 0 0))))
+        (sys4 (create-component nil :lookup-test 'uninstalled-testing-system '((:version 2 0 0)))))
+    (list sys1 sys2 sys3 sys4)))
+
+(define-test find-system-tests ()
+  (with-test-systems (lookup-test-systems)
+    (flet ((lookup (&optional version &key (errorp t))
+             (find-system :lookup-test :version version :errorp errorp)))
+      (destructuring-bind (min-system mid-system max-system uninstalled-system) *systems*
+        (assert-eq max-system (lookup))
+        (assert-eq max-system (lookup "1.00"))
+        (assert-eq min-system (lookup "0.0.1"))
+        (assert-error 'no-such-component (lookup "10"))
+        (assert-false (lookup "10" :errorp nil))
+        (assert-eq uninstalled-system (lookup "2"))
+    
+        (perform mid-system 'load-action)
+        (assert-eq mid-system (lookup))
+        (assert-eq mid-system (lookup '(> 0 0 1)))
+        (assert-eq mid-system (lookup '(0 1 0)))
+        (assert-eq min-system (lookup "0.0.1"))
+        (assert-eq max-system (lookup "1"))
+        (assert-eq uninstalled-system (lookup "2"))))))
+
 ;(mb:test :mb.sysdef)
                      
 (princ (run-tests))
+ 
