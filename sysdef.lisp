@@ -1682,9 +1682,6 @@ and have a last compile time which is greater than the last compile time of COMP
     (format *verbose-out* "~&DELETE ~A~%" output-file)
     (delete-file output-file)))
 
-
-
-
 (defun eql-specializer-p (specializer)
   (and (consp specializer) (eql (car specializer) 'eql)))
 
@@ -2351,7 +2348,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 2 13)
+  (:version 0 2 14)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))

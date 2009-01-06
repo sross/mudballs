@@ -359,6 +359,11 @@ a list created by extracting SLOT-NAMES from form."
     (test-once nil)
     (test-once t)))
 
+
+;; we add this function because (compile-file-pathname #P"foo.lisp") fails in CLISP.
+(defun fasl-path-type ()
+  (pathname-type (compile-file-pathname (make-pathname :name "foo" :type "lisp" :directory '(:absolute)))))
+
 (define-test output-pathname-test
   (with-test-systems ()
     (let ((sys (define-test-system :output-test ()
@@ -383,7 +388,7 @@ a list created by extracting SLOT-NAMES from form."
                    (:components "foo" ("bar" (:output-pathname "/baz/bar.fas"))))))
 
         (assert-equal (merge-pathnames (fasl-path (find-component sys "foo"))
-                                       (make-pathname :version :newest :name "foo" :type (pathname-type (compile-file-pathname "foo.lisp"))
+                                       (make-pathname :version :newest :name "foo" :type (fasl-path-type)
                                                       :directory '(:absolute "tmp" "for-test-system" "0.0.1")))
                       (output-file (find-component sys "foo")))
         (assert-equal "/baz/bar.fas" (output-file (find-component sys "bar")))))))
