@@ -209,6 +209,8 @@ a list created by extracting SLOT-NAMES from form."
   (with-slot-assertions (component match-action consequent-action)
     (assert-slot-values '((:foo :version (0 2)) action nil)
                         (make-dependency-spec '(:foo :version (0 2))))
+    (assert-slot-values '((:foo :version "0.2") action nil)
+                        (make-dependency-spec '(:foo :version "0.2")))
     (assert-slot-values '(:foo action nil) (make-dependency-spec :foo))
     (assert-slot-values '(:foo action nil) (make-dependency-spec '(:foo)))
     (assert-slot-values '(:foo load-action nil) (make-dependency-spec '(load-action :foo )))
