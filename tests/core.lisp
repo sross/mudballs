@@ -31,7 +31,7 @@ Bindings are the same as in flet/labels"
 
 ;;; Utils Macros and Functions
 (defmacro define-test-system (name super &body body)
-  `(progn (push ,name *builtin-systems*)
+  `(progn (push ',name *builtin-systems*)
      (define-system ,name ,(or super '(testing-system)) ,@body)))
 
 (defclass testing-system (system) () (:default-initargs :default-component-class 'testing-file))
@@ -169,10 +169,36 @@ a list created by extracting SLOT-NAMES from form."
 (define-test subsystem-definition
   (assert-true (subsystem-definition-p '(foo bar)))
   (assert-true (subsystem-definition-p '(foo)))
-  (assert-false (subsystem-definition-p 'foo)))
+  (assert-false (subsystem-definition-p 'foo))
 
+  (with-test-systems ()
+    (let* ((parent (define-test-system :parent-system ()
+                     (:version 0 1)))
+           (sub (define-test-system (:parent-system :sub-module) (module)
+                  ;;we need to specify module here otherwise define-test-system will default to SYSTEM
+                  (:version 0 1))))
+      (assert-eq (parent-of sub) parent)
+      (assert-equal 1 (length (components-of parent))))))
 
+(defclass loud-mixin () ())
 
+(define-test multiple-parent-definition
+  (with-test-systems ()
+    (let ((system (define-test-system :parent-system (loud-mixin)
+                    (:version 0 1))))
+      (assert-true system)
+      (assert-true (typep system 'loud-mixin))
+      (assert-true (typep system 'system)))
+    (let ((module (define-test-system (:parent-system :sub-module) (loud-mixin)
+                    ;;we need to specify module here otherwise define-test-system will default to SYSTEM
+                    (:version 0 1))))
+      (assert-true module)
+      (assert-true (typep module 'loud-mixin))
+      (assert-true (typep module 'module)))
+
+    (assert-true (define-test-system :test (loud-mixin system)
+                   (:version 0 1)))))
+      
 (define-test find-system-for
   (with-test-systems ()
     (assert-eql (find-component :test :module1)
@@ -183,17 +209,17 @@ a list created by extracting SLOT-NAMES from form."
 
 
 (define-test define-system
-  (assert-expands '(fn-define-system ':foo 'system nil '((:version 0 8)))
+  (assert-expands '(fn-define-system ':foo '() nil '((:version 0 8)))
                   (define-system  :foo () (:version 0 8))))
 
 
 ;; some basic system definition tests
 (define-test fn-define-system
   (with-test-systems ()
-    (fn-define-system :new 'testing-system nil nil)
+    (fn-define-system :new '(testing-system) nil nil)
     (assert= 3 (length *systems*))
-    (assert-error 'no-such-component (fn-define-system '(:new2 "foo") 'testing-system (find-component :test) nil))
-    (fn-define-system '(:new "foo") 'testing-system (find-component :test) nil)
+    (assert-error 'no-such-component (fn-define-system '(:new2 "foo") '(testing-system) (find-component :test) nil))
+    (fn-define-system '(:new "foo") '(testing-system) (find-component :test) nil)
     (assert= 3 (length *systems*))
     (assert= 1 (length (components-of (find-system :new))))))
 
@@ -295,18 +321,37 @@ a list created by extracting SLOT-NAMES from form."
 
 (define-test multiple-versions-tests
   (assert-equal '((define-system :foo (system) (:version 0 8 1)) (define-system :foo (system) (:version 0 8 0)))
-                (expand-multiple-versions :foo 'system '((:versions (0 8 1) (0 8 0)))))
+                (expand-multiple-versions :foo '(system) '((:versions (0 8 1) (0 8 0)))))
   (assert-error 'error (capture-condition error (expand-multiple-versions :foo 'system ())))
 
   (with-test-systems ()
     (assert-false (find-system :multiple :errorp nil))
-    (define-system :multiple ()
+    (define-test-system :multiple ()
       (:versions (0 0 2) (0 0 3)))
     (assert= 2 (length (systems-for :multiple)))
     (assert-equal '((0 0 3) (0 0 2)) (mapcar 'version-of (systems-for :multiple)))
     (define-test-system :multiple ()
       (:version 0 0 2 5))
-    (assert-equal '((0 0 3) (0 0 2 5) (0 0 2)) (mapcar 'version-of (systems-for :multiple)))))
+    (assert-equal '((0 0 3) (0 0 2 5) (0 0 2)) (mapcar 'version-of (systems-for :multiple)))
+    ;; and test with md5sums
+
+    (define-test-system :md5sums ()
+      (:versions (0 0 2) (0 0 3) (0 0 4))
+      (:md5sums "002" "003" "004"))
+    (assert-equalp
+     '(((0 0 4) "004") ((0 0 3) "003") ((0 0 2) "002"))
+     (mapcar #'(lambda (x)
+                 (list (version-of x) (md5sum-of x)))
+             (systems-matching (lambda (x) (equal x :md5sums)) :key 'name-of)))
+
+    (define-test-system :md5sums2 ()
+      (:versions (0 0 2) (0 0 3) (0 0 4))
+      (:md5sums "002" "003"))
+    (assert-equalp
+     '(((0 0 4) nil) ((0 0 3) "003") ((0 0 2) "002"))
+     (mapcar #'(lambda (x)
+                 (list (version-of x) (md5sum-of x)))
+             (systems-matching (lambda (x) (equal x :md5sums2)) :key 'name-of)))))
 
 
 

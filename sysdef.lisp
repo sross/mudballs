@@ -101,7 +101,7 @@
                         (error "Can't find suitable CLOS package.")))
    :class-precedence-list :generic-function-methods :method-specializers :effective-slot-definition
    :class-slots :slot-definition-type :slot-definition-name :slot-definition-initargs
-   :method-qualifiers)
+   :method-qualifiers :class-direct-superclasses :class-direct-subclasses)
   (:documentation "The :MB.SYSDEF package contains all the plumbing for defining your own systems.
 Typically you would not use this package directly but rather define your systems while `in-package` :sysdef-user."))
 
@@ -1054,7 +1054,7 @@ examples
 
 (defgeneric add-component-to (component system)
   (:method ((comp component) (system module))
-   (revpush comp (components-of system))))
+   (values comp (revpush comp (components-of system)))))
 
 (defun ensure-uniqueness (name system)
   (when (%find-component system name :errorp nil)
@@ -1751,7 +1751,7 @@ for define-system. This has only been tested with Lispworks at the moment. Sorry
   "Removes SYSTEM from the set of defined systems."
   (setf *systems* (delete system *systems*)))
   
-(defmacro define-system (name (&optional (class 'system)) &body options)
+(defmacro define-system (name (&rest superclasses) &body options)
   (declare (system-name name) (symbol class))
   "Define a system called NAME of type CLASS and customized using OPTIONS.
 NAME may be a symbol, which defines a system called name, or a list
@@ -1768,28 +1768,38 @@ Systems are unique on a name (tested using string-equal), version basis.
 "
   (if (multiple-version-definitions-p options)
       `(progn
-         ,@(expand-multiple-versions name class options))
-      `(fn-define-system ',name ',class nil ',options)))
+         ,@(expand-multiple-versions name superclasses options))
+      `(fn-define-system ',name ',superclasses nil ',options)))
 
- 
+
 (eval-when (:compile-toplevel :load-toplevel :execute)
 
 (defun multiple-version-definitions-p (options)
   (get-from-options options :versions))
 
-(defun expand-multiple-versions (name class options)
-  (let ((without-versions (remove :versions options :key 'car)))
+(defun expand-multiple-versions (name superclasses options)
+  (let ((without-versions-and-md5sums (remove :md5sums (remove :versions options :key 'car) :key 'car))
+        (versions (get-from-options options :versions))
+        (md5sums (get-from-options options :md5sums)))
     (assert (get-from-options options :versions)
         (options) "Options does not contain a :versions form.")
-    (mapcar #'(lambda (version)
-                `(define-system ,name (,class)
-                   (:version ,@version)
-                   ,@without-versions))
-            (get-from-options options :versions))))
+    (apply 'mapcar #'(lambda (version md5sum)
+                       `(define-system ,name ,superclasses
+                          (:version ,@version)
+                          ,@(when md5sum (list (list :md5sum md5sum)))
+                          ,@without-versions-and-md5sums))
+           (same-length versions md5sums))))
+
+(defun same-length (&rest lists)
+  "Returns the lists passed in as lists of the same length. Short lists are padded with NILs"
+  (let ((max-size (reduce 'max lists :key 'length)))
+    (mapcar #'(lambda (list)
+                (map-into (make-list max-size) 'identity list))
+            lists)))
 
 (defun get-from-options (options key &optional default)
-  (or (loop for (keyword . value) in options
-            thereis (and (eql key keyword) value))
+  (or (loop :for (keyword . value) :in options
+            :thereis (and (eql key keyword) value))
       default))
 
 ) ;;eval-when
@@ -1798,17 +1808,54 @@ Systems are unique on a name (tested using string-equal), version basis.
 (deftype subsystem-definition ()
   'cons)
 
-(defun fn-define-system (name class parent options)
+(defun fn-define-system (name superclasses parent options)
   (check-type name system-name)
   (if (subsystem-definition-p name)
-      (let ((class (if (eql class 'system) 'module class))
+      (let ((class (module-class superclasses))
             (parent (find-system-for name
                                      (get-from-options options :version (first-version))))
             (name (first (last name))))
         (add-component-to (create-component parent name class options) parent))
-      (register-system (create-component parent name class options))))
+      (register-system (create-component parent name (system-class superclasses) options))))
+
+(defun list-classes (superclasses &key with)
+  (flet ((as-class (x)
+           (if (typep x 'standard-class)
+               x
+               (find-class x))))
+    (let ((classes (mapcar #'as-class superclasses)))
+      (nconc classes
+             (when (and with (not (find with classes :key 'class-name)))
+               (list (as-class with)))))))
 
 
+;; from AMOP
+(defun find-programattic-class (superclasses)
+  (let ((class (find-if #'(lambda (class)
+                            (equal superclasses (class-direct-superclasses class)))
+                        (class-direct-subclasses (car superclasses)))))
+    (if class
+        class
+        (make-programmatic-class superclasses))))
+
+(defun make-programmatic-class (superclasses)
+  (make-instance 'standard-class
+                 :name (mapcar 'class-name superclasses)
+                 :direct-superclasses superclasses
+                 :direct-slots ()))
+
+(defun system-class (superclasses)
+  "Creates a class which is used to instantiate a system. If superclasses only has one entry
+then that entry is returned otherwise a new instance of standard class is created which superclasses
+as the direct superclasses."
+  (if superclasses
+      (find-programattic-class (list-classes superclasses :with 'system))
+      (find-class 'system)))
+                    
+(defun module-class (superclasses)
+  (if superclasses
+      (find-programattic-class (list-classes superclasses :with 'module))
+      (find-class 'module)))
 
 (defun subsystem-definition-p (name)
   (typep name 'subsystem-definition))
@@ -2202,7 +2249,6 @@ loaded by functions on *custom-search-modules*."
          ',version))
 
 
-
 ;; CONFIG FILES
 (defclass config-file (lisp-source-file) ())
 (defmethod ensure-output-path-exists ((file config-file))
@@ -2349,7 +2395,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 2 15)
+  (:version 0 2 16)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))
