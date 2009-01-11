@@ -1818,6 +1818,11 @@ Systems are unique on a name (tested using string-equal), version basis.
         (add-component-to (create-component parent name class options) parent))
       (register-system (create-component parent name (system-class superclasses) options))))
 
+(defun on-cpl (class classes)
+  (some (lambda (super)
+          (find class (class-precedence-list super)))
+        classes))
+
 (defun list-classes (superclasses &key with)
   (flet ((as-class (x)
            (if (typep x 'standard-class)
@@ -1825,18 +1830,19 @@ Systems are unique on a name (tested using string-equal), version basis.
                (find-class x))))
     (let ((classes (mapcar #'as-class superclasses)))
       (nconc classes
-             (when (and with (not (find with classes :key 'class-name)))
+             (when (and with (not (on-cpl (as-class with) classes)))
                (list (as-class with)))))))
-
 
 ;; from AMOP
 (defun find-programattic-class (superclasses)
-  (let ((class (find-if #'(lambda (class)
-                            (equal superclasses (class-direct-superclasses class)))
-                        (class-direct-subclasses (car superclasses)))))
-    (if class
-        class
-        (make-programmatic-class superclasses))))
+  (if (singlep superclasses)
+      (first superclasses)
+      (let ((class (find-if #'(lambda (class)
+                                (equal superclasses (class-direct-superclasses class)))
+                            (class-direct-subclasses (car superclasses)))))
+        (if class
+            class
+            (make-programmatic-class superclasses)))))
 
 (defun make-programmatic-class (superclasses)
   (make-instance 'standard-class
@@ -1869,15 +1875,19 @@ module to be the parent of new-module with version VERSION."
     parent))
 
 (defun system-key ()
-  #'(lambda (sys) (list (name-of sys) (version-of sys))))
+  #'(lambda (sys) (list (name-of sys) (version-string (version-of sys)))))
 
 (defun register-system (system)
   (when-let (current-system (find (funcall (system-key) system) *systems* :test 'equalp :key (system-key)))
     (warn 'system-redefined :name (name-of system) :version (version-string system)))
   (setf *systems* (delete (funcall (system-key) system) *systems* :test #'equalp :key (system-key)))
   (pushnew system *systems* :test #'equalp :key (system-key))
+  ;; as we don't reuse our system definitions we need to make sure that the new version replaces any
+  ;; tracked loaded version
+  (when-let (loaded-system (system-loaded-p system))
+    (when (version= (version-of system) (version-of loaded-system))
+      (setf (system-loaded-p (name-of system)) system)))
   system)
-
 
 ;; Unlike ASDF we do not reuse our objects when redefining systems.
 ;; Explanation.....
@@ -1903,7 +1913,6 @@ module to be the parent of new-module with version VERSION."
      (process-option component :name name)
      (process-options component options)
      component)))
-
 
 ;; This is only to be used by copy-slots and is not to be extended.
 (defgeneric %copy-object (object)
@@ -2030,11 +2039,11 @@ has been loaded into the the current Lisp image or nil.")
   (:method ((sys system))
    (system-loaded-p (name-of sys)))
   (:method ((name t))
-   (gethash (normalize name) *loaded-versions*)))
+   (values (gethash (normalize name) *loaded-versions*))))
 
 (defgeneric (setf system-loaded-p) (newval designator)
-  (:method ((sys system) designator) 
-   (setf (gethash (normalize designator) *loaded-versions*) sys))
+  (:method ((newval system) designator) 
+   (setf (gethash (normalize designator) *loaded-versions*) newval))
   (:method ((name null) designator)
    (let ((system (gethash (normalize designator) *loaded-versions*)))
      (do-components (component system)
@@ -2197,7 +2206,9 @@ has been loaded into the the current Lisp image or nil.")
 (define-system :SYSDEF-DEFINITIONS ()
   (:pathname #.*sysdef-path*)
   (:default-component-class sysdef-file)
+  (:uses-macros-from :mudballs)
   (:components  ("files" wildcard-module (:directory :wild-inferiors))))
+
 
 (defmethod components-of ((sys (eql (find-system :sysdef-definitions))))
   (append (call-next-method) *custom-search-modules*))
@@ -2395,7 +2406,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 2 16)
+  (:version 0 2 18)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))

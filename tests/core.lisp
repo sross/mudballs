@@ -795,6 +795,18 @@ a list created by extracting SLOT-NAMES from form."
         (assert-eq max-system (lookup "1"))
         (assert-eq uninstalled-system (lookup "2"))))))
 
+(define-test loaded-version-tests ()
+  (with-test-systems ()
+    (let ((first (define-test-system :test-loaded ()
+                   (:version 0 0 1))))
+      (perform :test-loaded 'load-action)
+      (assert-eq (system-loaded-p :test-loaded) first)
+      (handler-bind ((warning 'muffle-warning))
+        (let ((second (define-test-system :test-loaded ()
+                        (:version 0 0 1))))
+          (assert-eq (system-loaded-p :test-loaded) second)
+          (assert-eq (find-system :test-loaded) second))))))
+
 ;(mb:test :mb.sysdef)
                      
 (princ (run-tests))
