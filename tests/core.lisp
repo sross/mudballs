@@ -391,6 +391,7 @@ a list created by extracting SLOT-NAMES from form."
                                                                 (component-pathname *tested-system*))
                                                :development-mode development-mode))
                  (expected-size 1))
+             (assert-eq (parent-of component) (find-system :sysdef-definitions))
              (assert-eql 'sysdef-file (default-component-class-of component))
              (assert-eql development-mode (development-mode-of component))
              (assert-true (search-directory-of component))
@@ -806,6 +807,7 @@ a list created by extracting SLOT-NAMES from form."
                         (:version 0 0 1))))
           (assert-eq (system-loaded-p :test-loaded) second)
           (assert-eq (find-system :test-loaded) second))))))
+
 
 ;(mb:test :mb.sysdef)
                      

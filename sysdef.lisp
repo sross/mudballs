@@ -2155,7 +2155,6 @@ has been loaded into the the current Lisp image or nil.")
 ;;; LOADING OF SYSTEM DEFINITION FILES
 ;;; sydef files are expected to execute define-system forms and are treated as a system
 ;;; whose components are computed.
-
 (defclass wildcard-sysdef-searcher (wildcard-module)
   ((search-directory :accessor search-directory-of :initarg :search-directory)
    (development-mode :accessor development-mode-of :initarg :development-mode :initform nil))
@@ -2173,7 +2172,11 @@ has been loaded into the the current Lisp image or nil.")
                                      (:development-systems ,(development-mode-of module))))))
 
 (defun wildcard-searcher (path &key (development-mode t))
-  (make-instance 'wildcard-sysdef-searcher :search-directory path :development-mode development-mode))
+  (create-component (find-system :sysdef-definitions)
+                    (format nil "wildcard-search-~A" path)
+                    'wildcard-sysdef-searcher
+                    `((:search-directory ,path)
+                      (:development-mode ,development-mode))))
 
 (defclass sysdef-file (lisp-source-file)
   ((development-systems-p :initarg :development-systems :initform nil :accessor development-systems-p
@@ -2407,7 +2410,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 2 18)
+  (:version 0 2 19)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))
