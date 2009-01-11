@@ -2,9 +2,10 @@
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (mb:load :tryil)
-  (use-package :tryil))
+  (use-package :tryil)
 
 ;; Allows rebinding of function in a dynamic extent.
+
 (defmacro dflet ((&rest function-bindings) &body body)
   "Executes body in the dynamic extent of function-bindings. This is NOT thread safe and redefines the functions in question.
 Bindings are the same as in flet/labels"
@@ -18,6 +19,7 @@ Bindings are the same as in flet/labels"
                        `(setf (fdefinition ',fn-name) ,saved))
                    saved-vars names)))))
 
+
 (defun create-function-definition-forms (fn-bindings)
   (loop :for (name arglist . body) :in fn-bindings :collect `(setf (fdefinition ',name)
                                                                    (lambda ,arglist ,@body))))
@@ -28,6 +30,7 @@ Bindings are the same as in flet/labels"
 (defun saved-names-for (fn-names)
   (mapcar (lambda (name) (make-symbol (format nil "SAVED-FN-~A" name)) ) fn-names))
 
+) ;; eval-when
 
 ;;; Utils Macros and Functions
 (defmacro define-test-system (name super &body body)
@@ -102,7 +105,9 @@ a list created by extracting SLOT-NAMES from form."
 
 
 (defmacro with-test-systems ((&rest creators) &body body)
-  `(let* ((*systems* ,(if creators `(mapcan 'funcall ',creators) `(default-test-systems)))
+  `(let* ((sysdef (find-system :sysdef-definitions))
+          (mudballs (find-system :mudballs))
+          (*systems* (list* mudballs sysdef ,(if creators `(mapcan 'funcall ',creators) `(default-test-systems))))
           (*loaded-versions* (make-hash-table)))
      ,@body))
 
@@ -215,10 +220,10 @@ a list created by extracting SLOT-NAMES from form."
 (define-test fn-define-system
   (with-test-systems ()
     (fn-define-system :new '(testing-system) nil nil)
-    (assert= 3 (length *systems*))
+    (assert= 5 (length *systems*))
     (assert-error 'no-such-component (fn-define-system '(:new2 "foo") '(testing-system) (find-component :test) nil))
     (fn-define-system '(:new "foo") '(testing-system) (find-component :test) nil)
-    (assert= 3 (length *systems*))
+    (assert= 5 (length *systems*))
     (assert= 1 (length (components-of (find-system :new))))))
 
 
@@ -751,13 +756,13 @@ a list created by extracting SLOT-NAMES from form."
   (with-test-systems ()
     (let ((count 0))
       (do-systems (sys) (incf count))
-      (assert= 2 count))
+      (assert= 4 count))
     (let ((systems (systems-matching (constantly t))))
       (map-systems (lambda (x) (setf systems (delete x systems))))
       (assert-true (endp systems)))
     (let ((first (first (systems-matching (constantly t)))))
       (undefine-system first)
-      (assert= 1 (length (systems-matching (constantly t)))))))
+      (assert= 3 (length (systems-matching (constantly t)))))))
 
 (define-test case-tests ()
   (with-test-systems ()
@@ -778,7 +783,8 @@ a list created by extracting SLOT-NAMES from form."
   (with-test-systems (lookup-test-systems)
     (flet ((lookup (&optional version &key (errorp t))
              (find-system :lookup-test :version version :errorp errorp)))
-      (destructuring-bind (min-system mid-system max-system uninstalled-system) *systems*
+      (destructuring-bind (mudballs sysdef min-system mid-system max-system uninstalled-system) *systems*
+        (declare (ignore mudballs sysdef))
         (assert-eq max-system (lookup))
         (assert-eq max-system (lookup "1.00"))
         (assert-eq min-system (lookup "0.0.1"))
@@ -807,7 +813,22 @@ a list created by extracting SLOT-NAMES from form."
           (assert-eq (find-system :test-loaded) second))))))
 
 
-;(mb:test :mb.sysdef)
-                     
-(princ (run-tests))
- 
+(defvar *count* 0)
+
+(define-test auto-sysdef-regiser-tests ()
+  (dflet ((register-sysdefs ()
+            (incf *count*)))
+    (macrolet ((ensure-call-count (count &body body)
+                 `(progn
+                    (setf *count* 0)
+                    ,@body
+                    (assert= ,count *count*))))
+      (with-test-systems ()
+        (register-sysdefs)
+        (ensure-call-count 1 (find-system :test))
+        (ensure-call-count 1 (mb:load :test))
+        (ensure-call-count 10 (dotimes (x 10) (find-system :test)))))))
+
+;; we don't run register-sysdefs here as it can slow down the tests
+(dflet ((register-sysdefs () (list 'registered)))
+  (princ (run-tests)))
