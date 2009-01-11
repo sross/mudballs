@@ -1753,10 +1753,11 @@ for define-system. This has only been tested with Lispworks at the moment. Sorry
   
 (defmacro define-system (name (&rest superclasses) &body options)
   (declare (system-name name) (symbol class))
-  "Define a system called NAME of type CLASS and customized using OPTIONS.
+  "Define a system called NAME of a class with superclasses SUPERCLASSES and customized using OPTIONS.
 NAME may be a symbol, which defines a system called name, or a list
 of the form (SYSTEM [MODULES*] NAME) which defines a new MODULE on component
 found by descending into systems components. See SYSTEM-NAME.
+SUPERCLASSES is a list then an anonymous class is created which is used as the class for the system.
 
 None of the arguments are evaluated.
 OPTIONS = OPTION*
