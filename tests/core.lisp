@@ -31,8 +31,7 @@ Bindings are the same as in flet/labels"
 
 ;;; Utils Macros and Functions
 (defmacro define-test-system (name super &body body)
-  `(progn (push ',name *builtin-systems*)
-     (define-system ,name ,(or super '(testing-system)) ,@body)))
+  `(define-system ,name ,(or super '(testing-system)) ,@body))
 
 (defclass testing-system (system) () (:default-initargs :default-component-class 'testing-file))
 (defmethod component-exists-p ((system testing-system))
@@ -104,7 +103,6 @@ a list created by extracting SLOT-NAMES from form."
 
 (defmacro with-test-systems ((&rest creators) &body body)
   `(let* ((*systems* ,(if creators `(mapcan 'funcall ',creators) `(default-test-systems)))
-          (*builtin-systems* (remove-duplicates (mapcar 'name-of *systems*)))
           (*loaded-versions* (make-hash-table)))
      ,@body))
 

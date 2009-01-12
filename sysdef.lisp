@@ -101,7 +101,7 @@
                         (error "Can't find suitable CLOS package.")))
    :class-precedence-list :generic-function-methods :method-specializers :effective-slot-definition
    :class-slots :slot-definition-type :slot-definition-name :slot-definition-initargs
-   :method-qualifiers :class-direct-superclasses :class-direct-subclasses)
+   :method-qualifiers :class-direct-superclasses :class-direct-subclasses :finalize-inheritance)
   (:documentation "The :MB.SYSDEF package contains all the plumbing for defining your own systems.
 Typically you would not use this package directly but rather define your systems while `in-package` :sysdef-user."))
 
@@ -180,7 +180,11 @@ System paths take the form *systems-path* /SYSTEM-NAME/VERSION/")
 compiled to.
 This can be set using the preference (in ~/.mudballs.prefs) :fasl-output-root")
 
-(defvar *builtin-systems* '(:mudballs :sysdef-definitions))
+(defvar *builtin-systems* '("mudballs" "sysdef-definitions"))
+
+(defun builtin-system-p (name)
+  (member (component-name name) *builtin-systems* :test #'name=))
+
 
 (defparameter *finders* '(default-system-finder)
   "A list of functions with the arglist (name &rest args &key errorp version) which are used
@@ -1098,6 +1102,7 @@ This adds various keywords to the system which are used when mb:search'ing throu
     (setf (pathname-of system) (current-directory))))
 
 (defmethod process-option :after ((system system) (key (eql :development)) &rest data)
+  (declare (ignore data))
   (setup-development-system-path system))
 
 ;; This also needs to run after initialize-instance in case *default-development-mode* is bound to true
@@ -1752,7 +1757,7 @@ for define-system. This has only been tested with Lispworks at the moment. Sorry
   (setf *systems* (delete system *systems*)))
   
 (defmacro define-system (name (&rest superclasses) &body options)
-  (declare (system-name name) (symbol class))
+  (declare (system-name name))
   "Define a system called NAME of a class with superclasses SUPERCLASSES and customized using OPTIONS.
 NAME may be a symbol, which defines a system called name, or a list
 of the form (SYSTEM [MODULES*] NAME) which defines a new MODULE on component
@@ -1826,9 +1831,11 @@ Systems are unique on a name (tested using string-equal), version basis.
 
 (defun list-classes (superclasses &key with)
   (flet ((as-class (x)
-           (if (typep x 'standard-class)
-               x
-               (find-class x))))
+           (let ((class (if (typep x 'standard-class)
+                            x
+                            (find-class x))))
+             (finalize-inheritance class)
+             class)))
     (let ((classes (mapcar #'as-class superclasses)))
       (nconc classes
              (when (and with (not (on-cpl (as-class with) classes)))
@@ -1847,7 +1854,10 @@ Systems are unique on a name (tested using string-equal), version basis.
 
 (defun make-programmatic-class (superclasses)
   (make-instance 'standard-class
-                 :name (mapcar 'class-name superclasses)
+                 ;; CLISP only supports symbols as class names
+                 :name #-clisp (mapcar 'class-name superclasses)
+                       #+clisp (intern (format nil "ANON-~{~A~^-~}" (mapcar 'class-name superclasses))
+                                       :keyword)
                  :direct-superclasses superclasses
                  :direct-slots ()))
 
@@ -1982,6 +1992,7 @@ module to be the parent of new-module with version VERSION."
    (declare (ignore args errorp))
    system)
   (:method (name &rest args &key (errorp t) (version nil version-supplied?) &allow-other-keys)
+   (declare (ignorable args))
    (let ((sys (%find-system name (if version-supplied? version nil) :errorp errorp)))
      (cond (sys sys)
            (errorp (apply 'error 'no-such-component :name name (when version-supplied? (list :version version))))
@@ -2410,7 +2421,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 2 19)
+  (:version 0 2 20)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))
