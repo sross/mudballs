@@ -44,7 +44,7 @@
    ;; core protocol
    #:NAME-OF #:process-options #:PROCESS-OPTION #:EXECUTE #:PERFORM #:SUPPORTEDP  #:MODULE-DIRECTORY
    #:COMPONENT-PATHNAME #:INPUT-FILE #:INPUT-WRITE-DATE #:FASL-PATH #:OUTPUT-FILE #:OUTPUT-WRITE-DATE
-   #:ALL-FILES  #:OUT-OF-DATE-P #:DEPENDENCY-APPLICABLEP #:NAME= 
+   #:ALL-FILES  #:OUT-OF-DATE-P #:DEPENDENCY-APPLICABLEP #:NAME= #:READABLEP
    #:COMPONENT-DEPENDENCIES #:ACTION-DEPENDENCIES #:DEPENDENCIES-OF #:COMPONENT-EXISTS-P
    #:COMPONENT-OUTPUT-EXISTS-P  #:APPLICABLE-COMPONENTS #:COMPONENT-APPLICABLE-P 
    #:FIND-SYSTEM #:FIND-COMPONENT #:TOPLEVEL-COMPONENT-OF #:CHECK-SUPPORTED-P
@@ -72,6 +72,9 @@
 
    ;; WILDCARD MODULES
    #:WILDCARD-MODULE #:WILDCARD-PATHNAME-OF #:WILDCARD-SEARCHER
+
+   ;; NAMED MODULES
+   #:NAMED-MODULE
 
    ;; PATCHES
    #:LOAD-PATCHES #:CREATE-PATCH-MODULE #:PATCH
@@ -387,6 +390,7 @@ Allegro     :allegrocl
 ABCL        :abcl
 ECL         :ecl
 MCL         :mcl
+SCL         :scl
 OPENMCL/CCL :openmcl
 If an implementation other than the ones mentioned above are used an error will be signalled.
 
@@ -472,7 +476,10 @@ Sets the root pathname of the system to PATH. (See component-pathname for more i
 This specifies the destination of the output when operating on a component.
 This is only meaningful for files and doesn't apply to modules or systems.
 The output-pathname option is primarly used to specify a specific file to which
-a lisp-file is compiled.")))
+a lisp-file is compiled.")
+   (for :accessor for-of :initarg :for :initform nil :documentation "Source files can only be applicable
+for certain operating systems or implementations. When the :for option is provided the file is only considered
+for source-file-actions when the provided form satisfies FEATUREP.")))
 
 
 
@@ -519,7 +526,7 @@ can be bound by wildcard-searcher.")
    (deprecated :accessor deprecatedp :initarg :deprecated :initform nil
                :documentation "<strong>:deprecated</strong> <i>name-or-t</i>
 Setting deprecated indicates that this system is depcrecated and a warning will be signalled
-when loading this system. if NAME-OR-T is a system name then that name will be recommended in
+when loading this system. if NAME-OR-T is a system name then that name will be recommended in2
 the warning as a replacement.")
    (contact :accessor contact-of :initform "The Author" :initarg :contact)
    (config :accessor config-file-of :initform nil :initarg :config-file
@@ -629,6 +636,9 @@ download file for this system and will be checked when a system is installed."))
 
 (defclass STATIC-FILE (file) ())
 (defclass SOURCE-FILE (file) ())
+
+
+
 (defclass LISP-SOURCE-FILE (source-file) () (:default-initargs :type "lisp"))
 
 (defmethod print-object ((file file) stream)
@@ -778,6 +788,13 @@ them against component."))
      (execute system action))))
 
 
+;;; READABLEP
+(defgeneric readablep (file)
+  (:documentation "A predicate which returns true if the implementation believes that it can read FILE. This also works on modules.")
+  (:method ((file component))
+   (if (for-of file)
+       (and (featurep (for-of file)) t)
+       t)))
 
 ;;; OPTION PROCESSING
 ;; Valid options can also be initargs in this scheme.
@@ -808,9 +825,9 @@ them against component."))
   (:method ((feature cons))
    (let ((dispatch (first feature)))
      (ecase dispatch
-       (:and (every 'featurep (rest feature)))
-       (:or (some 'featurep (rest feature)))
-       (:not (not (featurep (second feature))))))))
+       ((:and and) (every 'featurep (rest feature)))
+       ((:or or) (some 'featurep (rest feature)))
+       ((:not not) (not (featurep (second feature))))))))
 
 (defgeneric check-supported-p (key &rest options)
   (:method ((key (eql :implementation)) &rest options)
@@ -882,7 +899,8 @@ See check-supported-p, os, implementation, platform"
 (defclass dependency ()
   ((match-action :reader match-action-of :initarg :match-action)
    (component :reader component-of :initarg :component)
-   (consequent-action :reader consequent-action-of :initarg :consequent)))
+   (consequent-action :reader consequent-action-of :initarg :consequent)
+   (for :reader for-of :initarg :for :initform nil)))
 
 (defmethod print-object ((dep dependency) stream)
   (print-unreadable-object (dep stream :type t :identity t)
@@ -957,7 +975,10 @@ Example 3.
 ;; match-action can be left out allowing specs of the form (component-name) at which
 ;; point we allow the parenthesis to be dropped leaving component-name
 ;; when match-action is not specified it is assumed to be ACTION.
-(defun make-dependency-list (spec &aux match comp consequent)
+(defun make-dependency-list (spec &aux match comp consequent for)
+  (when-let (for-spec (for-spec-p spec))
+    (setf spec (butlast spec)
+          for for-spec))
   (cond ((atom spec) (setf match 'action comp spec))
         ((versioned-system-name-p spec) (setf match 'action comp spec))
         ((singlep spec) (setf match 'action comp (first spec)))
@@ -966,16 +987,25 @@ Example 3.
         ((= (length spec) 3) (setf (values match comp consequent)
                                    (values-list spec)))
         (t (error "Invalid spec ~S." spec)))
-  (list match comp consequent))
+  (list match comp consequent for))
+
+(defun for-spec-p (spec)
+  (and (consp spec)
+       (consp (car (last spec)))
+       (let ((for-spec (car (last spec))))
+         (and (= (length for-spec) 2)
+              (when (eql (first for-spec) :for)
+                (second for-spec))))))
 
 (defun dependency-name (list)
   "Returns the name of the dependency from dependency list LIST."
   (second list))
 
 (defun make-dependency-spec (spec)
-  (destructuring-bind (match comp consequent) (make-dependency-list spec)
+  (destructuring-bind (match comp consequent for) (make-dependency-list spec)
     (make-instance 'dependency :match-action match
-                   :component comp :consequent consequent)))
+                   :component comp :consequent consequent
+                   :for for)))
 
 (defun versioned-system-name-p (spec)
   "Returns true if spec is a list of the form (name :version version-spec)"
@@ -1460,7 +1490,10 @@ and have a last compile time which is greater than the last compile time of COMP
 ;; CALCULATING DEPENDENCIES
 (defgeneric dependency-applicablep (dependency action)
   (:method ((dependency dependency) (action action))
-   (subtypep (class-of action) (match-action-of dependency)))
+   (and (if (for-of dependency)
+            (and (featurep (for-of dependency)) t)
+            t)
+        (subtypep (class-of action) (match-action-of dependency))))
   (:method ((dependency dependency) (action clean-action))
    ;; clean-action should not descend to dependencies
    nil))
@@ -1474,7 +1507,9 @@ and have a last compile time which is greater than the last compile time of COMP
 (defgeneric component-dependencies (component action)
   (:method ((component component) (action action))
    (loop :for dep :in (needs-of component)
-         :when (dependency-applicablep dep action)
+         :when (and (dependency-applicablep dep action)
+                    (component-applicable-p (find-component (parent-of component) (component-of dep))
+                                            action))
          :collect (cons (to-instance (or (consequent-action-of dep) action))
                         (find-component (parent-of component) (component-of dep)))))
   ;; we rely on th install action to process the dependcies for us
@@ -1570,14 +1605,10 @@ and have a last compile time which is greater than the last compile time of COMP
                   (components-of module))))
 
 (defgeneric component-applicable-p (component action)
-  (:method ((modules module) (action action))
-   t)
   (:method ((component component) (action action))
    t)
   (:method ((component component) (action source-file-action))
-   nil)
-  (:method ((component source-file) (action source-file-action))
-   t)
+   (readablep component))
   (:method ((modue lazy-module) (action action))
    nil))
 
@@ -2167,6 +2198,35 @@ has been loaded into the the current Lisp image or nil.")
         (sort (copy-list values) (ordered-of module) :key 'name-of)
         values)))
 
+;; NAMED-MODULES
+;; Named modules provide a module class whose directory name is specified by the :names option
+;; provided to it.
+;;eg
+;; (:components (compat named-module (:names :allego :lispworks (:sbcl "pcl"))))
+(defclass named-module (module)
+  ((names :initarg :names :initform nil :accessor names-of)))
+
+(full-data-option names-of :names "<strong>:names</strong> <i>mapping*</i> (only for named-module's)
+specifies the directory name that the module is to use based on MAPPINGs.
+Each mapping is of the for (<i>feature-test</i> &amp;optional<i>directory-name</i>) when only name is specified the
+parenthesis can be dropped and name is taken to be the string-downcase of feature-test.                                                
+When computing the directory-name of the named module, the directory-name of first mapping which has a feature
+test that passes featurep is used.")
+
+
+(defmethod appropriate-name ((module named-module))
+  (flet ((use (thing) (return-from appropriate-name thing)))
+    (loop :for name :in (names-of module) :do
+          (destructuring-bind (name &optional (dir (string-downcase name))) (mklist name)
+            (when (featurep name)
+              (use dir))))
+    (error "No appropriate directory name for module ~S." module)))
+
+(defmethod module-directory ((module named-module))
+  (let ((name (appropriate-name module)))
+    (if name
+        (list :relative name)
+        (error "No appropriate directory found for ~S." module))))
 
 ;;; LOADING OF SYSTEM DEFINITION FILES
 ;;; sydef files are expected to execute define-system forms and are treated as a system
@@ -2438,7 +2498,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 2 22)
+  (:version 0 2 23)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))

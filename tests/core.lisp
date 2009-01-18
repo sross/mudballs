@@ -33,6 +33,11 @@ Bindings are the same as in flet/labels"
 ) ;; eval-when
 
 ;;; Utils Macros and Functions
+(defmacro test-function-calls ((function test) &body body)
+  (let ((assertion-name (intern (format nil "ASSERT-~A" test) :tryil)))
+    `(progn ,@(loop for (arg result) in body
+                    collect `(,assertion-name ',result (,function ',arg ))))))
+
 (defmacro define-test-system (name super &body body)
   `(define-system ,name ,(or super '(testing-system)) ,@body))
 
@@ -232,6 +237,28 @@ a list created by extracting SLOT-NAMES from form."
   (assert-false (versioned-system-name-p '(:foo :version)))
   (assert-false (versioned-system-name-p 'fo))
   (assert-false (versioned-system-name-p nil)))
+
+
+;([match-action] component-name [action-to-take])
+
+
+
+(define-test make-dependency-list ()
+  (test-function-calls (make-dependency-list equalp)
+    (:foo                                    (action :foo nil nil))
+    ((source-file-action :foo load-action)   (source-file-action :foo load-action nil))
+    ((source-file-action :foo)               (source-file-action :foo nil nil))
+    ;; with version spec
+    ((:foo :version "0.1.8")                 (action (:foo :version "0.1.8") nil nil))
+    ((source-file-action (:foo :version "0.1.8") load-action)
+     (source-file-action (:foo :version "0.1.8") load-action nil))
+    ((source-file-action (:foo :version "0.1.8")) (source-file-action (:foo :version "0.1.8") nil nil))
+    ;; with :needs specification
+    ((:foo (:for :sbcl)) (action :foo nil :sbcl))
+    ((source-file-action :foo load-action (:for :sbcl))
+     (source-file-action :foo load-action :sbcl))
+    ((source-file-action :foo (:for :sbcl))
+     (source-file-action :foo nil :sbcl))))
 
 
 (define-test make-dependency-spec
@@ -597,12 +624,6 @@ a list created by extracting SLOT-NAMES from form."
             (perform sys1 'load-action)))
         (assert-error 'test-condition (perform sys3 'load-action))))))
 
-
-(defmacro test-function-calls ((function test) &body body)
-  (let ((assertion-name (intern (format nil "ASSERT-~A" test) :tryil)))
-    `(progn ,@(loop for (arg result) in body
-                    collect `(,assertion-name ',result (,function ',arg ))))))
-
 (define-test coerce-to-version
   (test-function-calls (coerce-to-version equal)
     ("0.8" (0 8))
@@ -828,6 +849,38 @@ a list created by extracting SLOT-NAMES from form."
         (ensure-call-count 1 (find-system :test))
         (ensure-call-count 1 (mb:load :test))
         (ensure-call-count 10 (dotimes (x 10) (find-system :test)))))))
+
+
+(define-test needs-for-tests ()
+  (let ((*features* '(:not-no-such-implementation)))
+    (with-test-systems ()
+      (let ((sys (define-test-system :test-system ()
+                   (:needs (:no-such-system (:for :no-such-implementation))))))
+      (assert-true (null (component-dependencies sys (make-instance 'load-action))))
+      (let ((*features* '(:no-such-implementation)))
+        (assert-error 'no-such-component (component-dependencies sys (make-instance 'load-action)))))
+
+      (let ((sys (define-test-system :test-file-level ()
+                   (:components ("foo"  (:for :no-such-implementation)) "bar"))))
+                    
+        (assert-true (perform sys 'load-action))
+        (assert-false (time-of (find-component sys "foo") 'load-action))
+
+        (let ((*features* '(:no-such-implementation)))
+          (assert-true (perform sys 'load-action :force t))
+          (assert-true (time-of (find-component sys  "foo") 'load-action)))))))
+
+
+(define-test named-module-test ()
+  (with-test-systems ()
+    (let ((module (make-instance 'named-module :name "test"
+                                 :names '(:my-implementation (:another-implementation) (:last-implementation "test")))))
+      (let ((*features* '(:my-implementation)))
+        (assert-equalp (list :relative "my-implementation") (module-directory module))
+        (let ((*features* '(:another-implementation)))
+          (assert-equalp (list :relative "another-implementation") (module-directory module)))
+        (let ((*features* '(:last-implementation)))
+          (assert-equalp (list :relative "test") (module-directory module)))))))
 
 ;; we don't run register-sysdefs here as it can slow down the tests
 (dflet ((register-sysdefs () (list 'registered)))
