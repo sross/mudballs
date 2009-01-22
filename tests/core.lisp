@@ -882,6 +882,29 @@ a list created by extracting SLOT-NAMES from form."
         (let ((*features* '(:last-implementation)))
           (assert-equalp (list :relative "test") (module-directory module)))))))
 
+(define-test conduit-system-test ()
+  (with-test-systems ()
+    (let* ((sys1 (define-test-system :dependent1 () (:components "file")))
+           (sys2 (define-test-system :dependent2 () (:components "file")))
+           (conduit (define-conduit-system :conduit-test (testing-system)
+                      (:needs :dependent1 :dependent2)
+                      (:components "file"))))
+
+      (assert-equal (conduit-systems-of sys1) (conduit-systems-of sys2))
+      
+      ;; load sys1 and ensure that sys2 and conduit are not loaded.
+      (assert-true (execute sys1 'load-action))
+      (assert-true (system-loaded-p sys1))
+      (assert-false (system-loaded-p sys2))
+      (assert-false (system-loaded-p conduit))
+
+      ;; load sys2 and ensure that all systems are now loaded
+      (assert-true (execute sys2 'load-action))
+      (assert-true (system-loaded-p sys1))
+      (assert-true (system-loaded-p sys2))
+      (assert-true (system-loaded-p conduit)))))
+      
+
 ;; we don't run register-sysdefs here as it can slow down the tests
 (dflet ((register-sysdefs () (list 'registered)))
   (princ (run-tests)))

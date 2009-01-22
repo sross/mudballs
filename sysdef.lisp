@@ -68,13 +68,16 @@
    #:SYSTEM-NOT-INSTALLED #:MISSING-COMPONENT #:SYSTEM-ALREADY-LOADED
    
    ;; SYSTEM DEFINITION
-   #:REGISTER-SYSDEFS #:define-system #:undefine-system
+   #:register-sysdefs #:define-system #:undefine-system
 
    ;; WILDCARD MODULES
    #:WILDCARD-MODULE #:WILDCARD-PATHNAME-OF #:WILDCARD-SEARCHER
 
    ;; NAMED MODULES
    #:NAMED-MODULE
+
+   ;; CONDUIT SYSTEMS
+   #:CONDUIT-SYSTEM #:DEFINE-CONDUIT-SYSTEM
 
    ;; PATCHES
    #:LOAD-PATCHES #:CREATE-PATCH-MODULE #:PATCH
@@ -102,8 +105,8 @@
                         (find-package :mop)
                         (find-package :openmcl-mop)
                         (error "Can't find suitable CLOS package.")))
-   :class-precedence-list :generic-function-methods :method-specializers :effective-slot-definition
-   :class-slots :slot-definition-type :slot-definition-name :slot-definition-initargs
+   :class-precedence-list :generic-function-methods :method-specializers #-abcl :effective-slot-definition
+   #-abcl :class-slots #-abcl :slot-definition-initargs
    :method-qualifiers :class-direct-superclasses :class-direct-subclasses :finalize-inheritance)
   (:documentation "The :MB.SYSDEF package contains all the plumbing for defining your own systems.
 Typically you would not use this package directly but rather define your systems while `in-package` :sysdef-user."))
@@ -1719,6 +1722,7 @@ and have a last compile time which is greater than the last compile time of COMP
         :when (eql-specializer-p key-specializer) :collect (second key-specializer)))
 
 (defgeneric specialized-option (thing)
+  #-abcl
   (:method ((thing effective-slot-definition))
    (copy-list (slot-definition-initargs thing)))
   (:method ((thing standard-method))
@@ -1731,6 +1735,7 @@ and have a last compile time which is greater than the last compile time of COMP
 (defun symbol< (a b)
   (string< (string a) (string b)))
 
+#-abcl
 (defun possible-define-system-options ()
   "this is a helper method which creates some html text from slots and
 process-option methods to create a guaranteed up to date option list
@@ -2102,7 +2107,9 @@ has been loaded into the the current Lisp image or nil.")
   (setf (system-loaded-p (name-of system)) system)
   (ensure-dependencies-up-to-date system)
   (load-patches system)
-  (load-config system))
+  (load-config system)
+  (maybe-load-conduit-systems system))
+
 
 (defgeneric ensure-dependencies-up-to-date (system)
   (:method ((system system))
@@ -2197,6 +2204,35 @@ has been loaded into the the current Lisp image or nil.")
     (if (ordered-of module)
         (sort (copy-list values) (ordered-of module) :key 'name-of)
         values)))
+
+
+;; CONDUIT-SYSTEMS
+(defclass conduit-system (system)
+  ()
+  (:documentation "CONDUIT-SYSTEMS are systems which are automatically loaded once the systems they
+depend on are loaded. These are heavily influenced by asdf-system-connections."))
+
+(defun all-dependencies-loaded? (conduit)
+  (loop :for (- . system) :in (component-dependencies conduit (load-time-value (make-instance 'load-action)) )
+        :always (system-loaded-p system)))
+             
+(defmethod maybe-load-conduit-systems ((system system))
+  (mapc #'(lambda (conduit)
+            (let ((loaded? (all-dependencies-loaded? conduit)))
+              (when loaded?
+                (execute conduit 'load-action))))
+        (conduit-systems-of system)))
+
+(defmethod conduit-systems-of ((system system))
+  (systems-matching #'(lambda (x) (and (typep x 'conduit-system)
+                                       (find-if #'(lambda (dependency)
+                                                    (eql (component-of dependency) (name-of system)))
+                                                (needs-of x))))))
+
+
+(defmacro define-conduit-system (name (&rest supers) &body options)
+  `(define-system ,name (,@supers conduit-system) ,@options))
+
 
 ;; NAMED-MODULES
 ;; Named modules provide a module class whose directory name is specified by the :names option
@@ -2308,7 +2344,9 @@ test that passes featurep is used.")
 (defun register-sysdefs ()
   "Loads all system definition files that have been registered.
 ie. All that are part of the standard mudballs distribution or custom files
-loaded by functions on *custom-search-modules*."
+loaded by functions on *custom-search-modules*. It is no longer necessary to
+call this function by hand as the system definition files will be interrogated
+before find-system is called."
   (declare (values))
   (perform *sysdef-system* 'load-action))
 
