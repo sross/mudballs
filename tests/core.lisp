@@ -41,6 +41,7 @@ Bindings are the same as in flet/labels"
 (defmacro define-test-system (name super &body body)
   `(define-system ,name ,(or super '(testing-system)) ,@body))
 
+
 (defclass testing-system (system) () (:default-initargs :default-component-class 'testing-file))
 (defmethod component-exists-p ((system testing-system))
   t)
@@ -285,8 +286,8 @@ a list created by extracting SLOT-NAMES from form."
 (define-test versioned-dependency
   (with-test-systems (default-test-systems extra-test-systems)
     (assert-true (perform (find-component :dep) 'load-action))
-    (assert-equal (find-system :test)
-                  (system-loaded-p :test))))
+    (assert-eq (find-system :test)
+               (system-loaded-p :test))))
 
 (define-test lazy-module
   (with-test-systems ()
@@ -858,7 +859,7 @@ a list created by extracting SLOT-NAMES from form."
                    (:needs (:no-such-system (:for :no-such-implementation))))))
       (assert-true (null (component-dependencies sys (make-instance 'load-action))))
       (let ((*features* '(:no-such-implementation)))
-        (assert-error 'no-such-component (component-dependencies sys (make-instance 'load-action)))))
+        (assert-error 'no-such-component (component-dependencies sys (make-instance 'load-action))))
 
       (let ((sys (define-test-system :test-file-level ()
                    (:components ("foo"  (:for :no-such-implementation)) "bar"))))
@@ -868,7 +869,7 @@ a list created by extracting SLOT-NAMES from form."
 
         (let ((*features* '(:no-such-implementation)))
           (assert-true (perform sys 'load-action :force t))
-          (assert-true (time-of (find-component sys  "foo") 'load-action)))))))
+          (assert-true (time-of (find-component sys  "foo") 'load-action))))))))
 
 
 (define-test named-module-test ()
@@ -903,7 +904,64 @@ a list created by extracting SLOT-NAMES from form."
       (assert-true (system-loaded-p sys1))
       (assert-true (system-loaded-p sys2))
       (assert-true (system-loaded-p conduit)))))
+
+
+(define-test system-eqality-tests
+  (with-test-systems ()
+    (let ((sys #1=(handler-bind ((system-redefined #'muffle-warning))
+                    (define-test-system :my-system ()
+                      (:components "foo" (:nested module (:components "bar")))))))
+      (let ((next #1#))
+        (assert-eq sys next)
+        (assert-eq (find-component sys "foo")
+                   (find-component next "foo")))
+
+      (execute sys 'load-action)
+      (assert-eq sys (system-loaded-p :my-system) )
       
+      (let ((after-load #1#))
+        (assert-eq after-load sys)
+        (assert-eq (system-loaded-p after-load) after-load)
+        (assert-true (time-of (find-component after-load "foo") 'load-action)))
+      
+      (let ((changed (handler-bind ((system-redefined #'muffle-warning))
+                       (define-test-system :my-system ()
+                         (:components "bar" "baz")))))
+        (assert-eq changed sys)
+        (assert-error 'no-such-component (find-component changed "foo"))
+        (assert= 2 (length (components-of changed))))))
+
+  ;; ensure that difference versions don't conflict
+  (with-test-systems ()
+    (let* ((sys1 (define-test-system :my-system ()
+                   (:version 0 1)
+                   (:components "foo" (:nested module (:components "bar")))))
+           (sys2 (define-test-system :my-system ()
+                   (:version 0 2)
+                   (:components "foo"))))
+      (assert-false (eq sys1 sys2)))))
+
+
+(define-test inherited-slots
+  (with-test-systems ()
+    (let ((sys #1=(handler-bind ((system-redefined #'muffle-warning))
+                    (define-test-system :my-system ()
+                      (:serial t)
+                      (:components "foo" (:nested module (:components "bar")))))))
+      (assert-true (member 'serial *inherited-slots*))
+      (assert-true (serialp sys))
+      (assert-true (serialp (find-component sys :nested)))
+
+      (let ((new-sys (handler-bind ((system-redefined #'muffle-warning))
+                       (define-test-system :my-system ()
+                         (:serial nil)
+                         (:components "foo" (:nested module (:components "bar")))))))
+        (assert-true (member 'serial *inherited-slots*))
+        (assert-false (serialp sys))
+        (assert-false (serialp (find-component sys :nested)))))))
+        
+        
+
 
 ;; we don't run register-sysdefs here as it can slow down the tests
 (dflet ((register-sysdefs () (list 'registered)))

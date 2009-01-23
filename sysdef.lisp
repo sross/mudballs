@@ -106,7 +106,7 @@
                         (find-package :openmcl-mop)
                         (error "Can't find suitable CLOS package.")))
    :class-precedence-list :generic-function-methods :method-specializers #-abcl :effective-slot-definition
-   #-abcl :class-slots #-abcl :slot-definition-initargs
+   #-abcl :class-slots #-abcl :slot-definition-initargs :class-default-initargs
    :method-qualifiers :class-direct-superclasses :class-direct-subclasses :finalize-inheritance)
   (:documentation "The :MB.SYSDEF package contains all the plumbing for defining your own systems.
 Typically you would not use this package directly but rather define your systems while `in-package` :sysdef-user."))
@@ -173,7 +173,7 @@ System paths take the form *systems-path* /SYSTEM-NAME/VERSION/")
     "This is the root folder of all of the mudballs system definition files.")
   )
 
-(defparameter *saved-slots* '(operation-times)
+(defparameter *saved-slots* '(operation-times components)
   "Slots which are saved on system redefinition.")
 
 (defparameter *inherited-slots* '(if-needs-fails if-supports-fails default-component-class serial)
@@ -1062,6 +1062,7 @@ dependencies using :uses-macros-from. This option is only used on modules and sy
     (normalize-spec)))
 
 
+(defvar *previous-components* ())
 
 (defmethod process-option ((system module) (key (eql :components)) &rest args)
   "<strong>:components</strong> <i>component-spec</i>
@@ -1079,9 +1080,10 @@ and adds the component to the systems component list.
 examples
  (:components \"packages\" \"macros\" \"functions\")
  (:components \"packages\" (:contrib module (:components \"file1\")))"
-  (setf (components-of system) nil) ; clear out components
-  (dolist (file-spec args)
-    (apply #'process-option system :component (mkspec file-spec))))
+  (let ((*previous-components* (components-of system)))
+    (setf (components-of system) nil) ; clear out components
+    (dolist (file-spec args)
+      (apply #'process-option system :component (mkspec file-spec)))))
 
 (defgeneric add-component-to (component system)
   (:method ((comp component) (system module))
@@ -1920,37 +1922,65 @@ module to be the parent of new-module with version VERSION."
     (warn 'system-redefined :name (name-of system) :version (version-string system)))
   (setf *systems* (delete (funcall (system-key) system) *systems* :test #'equalp :key (system-key)))
   (pushnew system *systems* :test #'equalp :key (system-key))
-  ;; as we don't reuse our system definitions we need to make sure that the new version replaces any
-  ;; tracked loaded version
-  (when-let (loaded-system (system-loaded-p system))
-    (when (version= (version-of system) (version-of loaded-system))
-      (setf (system-loaded-p (name-of system)) system)))
   system)
 
-;; Unlike ASDF we do not reuse our objects when redefining systems.
-;; Explanation.....
-;; When redefining a system it is important to ensure that slots 
-;; are set back to their default values when a system is reinitialized,
-;; this created portability nightmares when trying to
-;; ensure that each slot was set to its appropriate value (or made unbound).
-;; We can almost do this with (change-class (change-class 'class-with-no-slots) 'system)
-;; but this loses when you have :default-initargs.
 
-;; This creates a second issue. If we do not reuse our system objects we will consider a system to be
-;; unoperated upon when a system is redefined.
-;; So in order to prevent system redefinition from causing sysdef to consider a system 'unoperated'
-;; upon we copy the operation-times from old instance to new.
+;; CREATE-COMPONENT
+(defun extract-option (name options)
+  (cdr (find name options :key 'first)))
+
+(defun default-initargs (instance)
+  "Returns a list which can be used to reinitialize-instance to reset slots
+to their class defaults."
+  (flet ((compute-initarg (spec)
+           (destructuring-bind (initarg value initfn) spec
+             #+allegro
+             (rotatef value initfn)
+             (list initarg
+                   #+lispworks
+                   (if (integerp initfn)
+                       (case initfn
+                         (1 value)
+                         (3 (eval value)))
+                       (funcall initfn))
+                   #-lispworks (funcall initfn)))))
+    (loop :for initarg-spec :in (class-default-initargs (class-of instance))
+          :append (compute-initarg initarg-spec))))
+
+(defmethod reset-instance ((instance component))
+  (let ((saved-slots (loop :for slot in *saved-slots*
+                           :when (and (slot-exists-p instance slot)
+                                      (slot-boundp instance slot))
+                           :collect (cons slot (slot-value instance slot)))))
+    (apply 'reinitialize-instance instance (default-initargs instance))
+    (loop :for (slot . value) in saved-slots :do
+          (setf (slot-value instance slot) value))
+    instance))
+
+
+(defun existing-component (parent name version)
+  (or (find name *previous-components* :key 'name-of)
+      (%find-component parent name :errorp nil :version version)))
+  
 (defgeneric create-component (parent name class &optional options)
   (:method (parent name class &optional options)
-   (let ((current (%find-component parent name :errorp nil))
-         (component (make-instance class :parent parent)))
-     (when current
-       (copy-slots current component *saved-slots*))
-     (when parent
-       (copy-slots parent component *inherited-slots*))
-     (process-option component :name name)
-     (process-options component options)
-     component)))
+   (let* ((current (existing-component parent name (extract-option :version options))))
+
+     (when (and current (not (eql (class-of current) class)))
+       (change-class current class))
+     
+     (let ((component (or current (make-instance class))))
+       (reset-instance component)
+
+       (when parent
+         (copy-slots parent component *inherited-slots*)
+         (setf (parent-of component) parent))
+
+       (process-option component :name name)
+       (process-options component options)
+       
+       component))))
+     
 
 ;; This is only to be used by copy-slots and is not to be extended.
 (defgeneric %copy-object (object)
@@ -2536,7 +2566,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 2 23)
+  (:version 0 2 25)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))
@@ -2553,7 +2583,5 @@ at the top of the file."))
   (setf (time-of first-file (make-instance 'load-action))
         (get-universal-time)))
 
-(perform :mudballs 'load-action)
-(register-sysdefs)
-
+;(perform :mudballs 'load-action)
 ;; EOF
