@@ -48,6 +48,7 @@ the :MB.SYSDEF package. It also provides some useful search and install function
           #'(lambda (&rest args)
               (when loaded (error "Specified system (~A) has been loaded but has not redefinied ~A.~%"
                                   system func))
+              (register-sysdefs)
               (perform system 'load-action)
               (if package
                   (let ((package-sym (find-symbol (string func) package)))
@@ -94,6 +95,7 @@ author of the file specifies the necessary download url."
 (defun search (regex)
   "Prints out all available systems who have either a name, description or keywords matching regex.
 NOTE: Versions with an asterisk next to them are installed."
+  (register-sysdefs)
   (terpri) 
   (let ((regex (create-scanner (string regex) :case-insensitive-mode t)))
     (dolist (name (system-names (systems-matching-regex regex)))

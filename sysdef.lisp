@@ -47,7 +47,7 @@
    #:ALL-FILES  #:OUT-OF-DATE-P #:DEPENDENCY-APPLICABLEP #:NAME= #:READABLEP
    #:COMPONENT-DEPENDENCIES #:ACTION-DEPENDENCIES #:DEPENDENCIES-OF #:COMPONENT-EXISTS-P
    #:COMPONENT-OUTPUT-EXISTS-P  #:APPLICABLE-COMPONENTS #:COMPONENT-APPLICABLE-P 
-   #:FIND-SYSTEM #:FIND-COMPONENT #:TOPLEVEL-COMPONENT-OF #:CHECK-SUPPORTED-P
+   #:FIND-SYSTEM #:FIND-COMPONENT #:TOPLEVEL-COMPONENT-OF #:CHECK-SUPPORTED-P #:SKIP
 
    ;; Dependencies
    #:DEPENDENCY #:MATCH-ACTION-OF #:COMPONENT-OF #:CONSEQUENT-ACTION-OF
@@ -1135,8 +1135,8 @@ This adds various keywords to the system which are used when mb:search'ing throu
   (setup-development-system-path system))
 
 ;; This also needs to run after initialize-instance in case *default-development-mode* is bound to true
-(defmethod initialize-instance :after ((system system) &rest initargs &key)
-  (declare (ignore initargs))
+(defmethod shared-initialize :after ((system system) slot-names &rest initargs &key)
+  (declare (ignore initargs slot-names))
   (setup-development-system-path system))
 
 
@@ -1308,9 +1308,26 @@ This adds various keywords to the system which are used when mb:search'ing throu
   (:method ((thing string)) thing)
   (:method ((thing symbol)) (string-downcase thing)))
 
+(defun absolute-pathname-p (pathname)
+  (eql (car (pathname-directory pathname))
+       :absolute))
+
+(defun file-name (component)
+  (component-name (if (pathname-of component)
+                      (name-of (pathname (pathname-of component)))
+                      (name-of component))))
+
+(defun file-directory (component)
+  (when (pathname-of component)
+    (pathname-directory (pathname-of component))))
+
 (defgeneric component-pathname (file)
   (:method :around ((obj component))
-   (or (pathname-of obj) (call-next-method)))
+   (if (and (pathname-of obj) (not (typep obj 'module)))
+       (if (absolute-pathname-p (pathname-of obj))
+           (pathname (pathname-of obj))
+           (call-next-method))
+       (or (pathname-of obj) (call-next-method))))
   (:method ((sys null)) (merge-pathnames (make-pathname :version :newest)
                                          *systems-path*))
   (:method ((system system))
@@ -1320,7 +1337,7 @@ This adds various keywords to the system which are used when mb:search'ing throu
    (merge-pathnames (make-pathname :directory (module-directory module))
                     (component-pathname (parent-of module))))
   (:method ((file file)) ;;what about the rest of the components. version etc.
-   (merge-pathnames (make-pathname :type (file-type file) :name (component-name (name-of file)))
+   (merge-pathnames (make-pathname :directory (file-directory file) :type (file-type file) :name (file-name file))
                     (component-pathname (parent-of file)))))
 
 
@@ -1845,13 +1862,14 @@ Systems are unique on a name (tested using string-equal), version basis.
 
 (defun fn-define-system (name superclasses parent options)
   (check-type name system-name)
-  (if (subsystem-definition-p name)
-      (let ((class (module-class superclasses))
-            (parent (find-system-for name
-                                     (get-from-options options :version (first-version))))
-            (name (first (last name))))
-        (add-component-to (create-component parent name class options) parent))
-      (register-system (create-component parent name (system-class superclasses) options))))
+  (with-simple-restart (skip "Skip the definition of ~S." name)
+    (if (subsystem-definition-p name)
+        (let ((class (module-class superclasses))
+              (parent (find-system-for name
+                                       (get-from-options options :version (first-version))))
+              (name (first (last name))))
+          (add-component-to (create-component parent name class options) parent))
+        (register-system (create-component parent name (system-class superclasses) options)))))
 
 (defun on-cpl (class classes)
   (some (lambda (super)
@@ -1947,19 +1965,22 @@ to their class defaults."
     (loop :for initarg-spec :in (class-default-initargs (class-of instance))
           :append (compute-initarg initarg-spec))))
 
+(defclass empty-class () ())
+          
 (defmethod reset-instance ((instance component))
   (let ((saved-slots (loop :for slot in *saved-slots*
                            :when (and (slot-exists-p instance slot)
                                       (slot-boundp instance slot))
-                           :collect (cons slot (slot-value instance slot)))))
+                           :collect (cons slot (slot-value instance slot))))
+        (class (class-of instance)))
+    (change-class (change-class instance 'empty-class) class)
     (apply 'reinitialize-instance instance (default-initargs instance))
     (loop :for (slot . value) in saved-slots :do
           (setf (slot-value instance slot) value))
     instance))
 
-
 (defun existing-component (parent name version)
-  (or (find name *previous-components* :key 'name-of)
+  (or (find name *previous-components* :key 'name-of :test 'name=)
       (%find-component parent name :errorp nil :version version)))
   
 (defgeneric create-component (parent name class &optional options)
@@ -1970,8 +1991,9 @@ to their class defaults."
        (change-class current class))
      
      (let ((component (or current (make-instance class))))
-       (reset-instance component)
-
+       (when current
+         (reset-instance component))
+       
        (when parent
          (copy-slots parent component *inherited-slots*)
          (setf (parent-of component) parent))
@@ -2087,7 +2109,7 @@ If still no version has been found and ERRORP is true then an error of type no-s
    (%find-system name (when version-supp-p version) :errorp errorp))
   (:method ((parent module) name &key (errorp t) version) ;; Version is unused here
    (declare (ignore version))
-   (or (find name (slot-value parent 'components) :key #'name-of :test #'equalp)
+   (or (find name (slot-value parent 'components) :key #'name-of :test #'name=)
        (when errorp (error 'no-such-component :name name :parent parent)))))
 
 (deftype system-designator ()
@@ -2140,12 +2162,13 @@ has been loaded into the the current Lisp image or nil.")
   (load-config system)
   (maybe-load-conduit-systems system))
 
-
+(defvar *mudballs-loaded* nil)
 (defgeneric ensure-dependencies-up-to-date (system)
   (:method ((system system))
-   (dolist (sys *systems*)
-     (when (on-macro-use-list sys system)
-       (execute sys 'load-action)))))
+   (when *mudballs-loaded*
+     (do-systems (sys)
+       (when (on-macro-use-list sys system)
+         (execute sys 'load-action))))))
 
 (defmethod execute :before ((system system) (action source-file-action))
   (let ((loaded-system (system-loaded-p (name-of system))))
@@ -2566,7 +2589,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 2 25)
+  (:version 0 2 26)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))
@@ -2583,5 +2606,7 @@ at the top of the file."))
   (setf (time-of first-file (make-instance 'load-action))
         (get-universal-time)))
 
-;(perform :mudballs 'load-action)
+(perform :mudballs 'load-action)
+
+(setf *mudballs-loaded* t)
 ;; EOF

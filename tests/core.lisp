@@ -404,6 +404,11 @@ a list created by extracting SLOT-NAMES from form."
       (let ((*default-development-mode* t))
         (define-system :test-dev-mode2 ()())
         (assert-true (development-mode (find-component :test-dev-mode2)))
+        (assert-equal #P"/tmp/" (pathname-of (find-component :test-dev-mode2))))
+      ;; This used to fail when reset instance would drop all the wrong columns
+      (let ((*default-development-mode* t))
+        (handler-bind ((system-redefined #'muffle-warning)) (define-system :test-dev-mode2 ()()))
+        (assert-true (development-mode (find-component :test-dev-mode2)))
         (assert-equal #P"/tmp/" (pathname-of (find-component :test-dev-mode2)))))))
 
 
@@ -906,23 +911,34 @@ a list created by extracting SLOT-NAMES from form."
       (assert-true (system-loaded-p conduit)))))
 
 
+  
 (define-test system-eqality-tests
   (with-test-systems ()
-    (let ((sys #1=(handler-bind ((system-redefined #'muffle-warning))
+    (let* ((sys (define-test-system :my-system ()
+                  (:components "foo" (:nested module (:components "bar")))))
+           (foo (find-component sys "foo")))
+
+      ;; Redefine.
+      (let ((next (handler-bind ((system-redefined #'muffle-warning))
                     (define-test-system :my-system ()
                       (:components "foo" (:nested module (:components "bar")))))))
-      (let ((next #1#))
-        (assert-eq sys next)
+        
+        (assert-eq next sys)
+        (assert-eq foo (find-component next "foo"))
         (assert-eq (find-component sys "foo")
-                   (find-component next "foo")))
+                   (find-component next "foo"))
 
-      (execute sys 'load-action)
-      (assert-eq sys (system-loaded-p :my-system) )
+        ;; load and ensure that time-of and system-loaded-p works
+        (execute sys 'load-action)
+        (assert-eq sys (system-loaded-p :my-system))
       
-      (let ((after-load #1#))
-        (assert-eq after-load sys)
-        (assert-eq (system-loaded-p after-load) after-load)
-        (assert-true (time-of (find-component after-load "foo") 'load-action)))
+        (let ((after-load (handler-bind ((system-redefined #'muffle-warning))
+                            (define-test-system :my-system ()
+                              (:components "foo" (:nested module (:components "bar")))))))
+          (assert-eq after-load sys)
+          (assert-eq foo (find-component after-load "foo"))        
+          (assert-eq (system-loaded-p after-load) after-load)
+          (assert-true (time-of (find-component after-load "foo") 'load-action))))
       
       (let ((changed (handler-bind ((system-redefined #'muffle-warning))
                        (define-test-system :my-system ()
@@ -959,6 +975,17 @@ a list created by extracting SLOT-NAMES from form."
         (assert-true (member 'serial *inherited-slots*))
         (assert-false (serialp sys))
         (assert-false (serialp (find-component sys :nested)))))))
+
+
+(define-test relative-pathname-test ()
+  (with-test-systems ()
+    (let ((sys (define-test-system :my-test ()
+                 (:components ("foo" (:pathname #.(make-pathname :directory '(:relative "foo") :name "bar")))
+                  ("bar" (:pathname #.(make-pathname :directory '(:absolute "tmp") :name "bar")))))))
+      (assert-equal (merge-pathnames (make-pathname :directory '(:relative "foo") :name "bar" :type "lisp")
+                                     (component-pathname sys))
+                    (component-pathname (find-component sys "foo")))
+      (assert-equal #P"/tmp/bar" (component-pathname (find-component sys "bar"))))))
         
         
 
