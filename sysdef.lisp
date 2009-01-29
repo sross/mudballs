@@ -972,7 +972,12 @@ Example 3.
 "   
    
   (dolist (one-dep (mapcar #'make-dependency-spec data))
+    (revpush (make-compilation-dependency one-dep) (needs-of comp))
     (revpush one-dep (needs-of comp))))
+
+(defun make-compilation-dependency (dep)
+  (make-instance 'dependency :match-action 'compile-action :component (component-of dep)
+                 :consequent 'load-action :for (for-of dep)))
 
 ;; Dependency specs (while fully specified are (match-action component-name [action-to-take])
 ;; match-action can be left out allowing specs of the form (component-name) at which
@@ -1134,9 +1139,12 @@ This adds various keywords to the system which are used when mb:search'ing throu
   (declare (ignore data))
   (setup-development-system-path system))
 
-;; This also needs to run after initialize-instance in case *default-development-mode* is bound to true
-(defmethod shared-initialize :after ((system system) slot-names &rest initargs &key)
-  (declare (ignore initargs slot-names))
+(defmethod initialize-instance :after ((system system) &rest initargs &key)
+  (declare (ignore initargs))
+  (setup-development-system-path system))
+
+(defmethod reinitialize-instance :after ((system system) &rest initargs &key)
+  (declare (ignore initargs))
   (setup-development-system-path system))
 
 
@@ -1526,14 +1534,38 @@ and have a last compile time which is greater than the last compile time of COMP
       sym-or-object
       (make-instance sym-or-object)))
 
+
+(defmethod immediate-dependencies ((component component) (action action))
+  "Returns a list of dependencies for the component which are applicable for action."
+  (loop :for dep :in (needs-of component)
+        :when (and (dependency-applicablep dep action)
+                   (component-applicable-p (find-component (parent-of component) (component-of dep))
+                                           action))
+        :collect (cons (to-instance (or (consequent-action-of dep) action))
+                       (find-component (parent-of component) (component-of dep)))))
+
+
+(defmethod non-obvious-dependencies ((component component) (action action))
+  "This (poorly) named methed returns dependencies for components upon which COMPONENT depends
+which have been removed due to not being applicable.
+This is to solve a bug (or non obvious behaviour) which occurs when having a serial system and
+one of the components has a :for specification which is not applicable. Under this case a break in
+the dependency chain is caused. eg
+\(define-system :test () (:components \"package\" (\"fixes\" (:for :sbcl)) \"features\")) asdf
+This component, when compiled in implementations other than SBCL will not load package before
+compiling features as the FIXES components dependencies do not get processed."
+  (loop :for dep :in (needs-of component)
+        :when (and (dependency-applicablep dep action)
+                   (not (component-applicable-p (find-component (parent-of component) (component-of dep)) action)))
+        ;; now collect all the component-dependencies of the dependent component
+        :append (component-dependencies (find-component (parent-of component) (component-of dep))
+                                        action)))
+        
 (defgeneric component-dependencies (component action)
   (:method ((component component) (action action))
-   (loop :for dep :in (needs-of component)
-         :when (and (dependency-applicablep dep action)
-                    (component-applicable-p (find-component (parent-of component) (component-of dep))
-                                            action))
-         :collect (cons (to-instance (or (consequent-action-of dep) action))
-                        (find-component (parent-of component) (component-of dep)))))
+   (append (non-obvious-dependencies component action)
+           (immediate-dependencies component action)))
+          
   ;; we rely on th install action to process the dependcies for us
   ;; If this method is not present then the :before action on execute
   ;; for processing dependencies will download the systems in a non
@@ -1541,17 +1573,16 @@ and have a last compile time which is greater than the last compile time of COMP
   (:method ((component system) (action install-action)) nil))
 
 (defgeneric action-dependencies (action component)
-  (:method ((action action) (component module))
-   nil)
   (:method ((action action) (component component))
    (loop for dep-action in (needs-of action)
          collect (cons (make-instance dep-action) component))))
 
 (defgeneric dependencies-of (action comp)
   (:method ((action symbol) component)
-   (dependencies-of (make-instance action) component))
-  (:method ((action action) (comp component))
-   (append (action-dependencies action comp) (component-dependencies comp action))))
+   (dependencies-of (make-instance action) component)))
+
+(defmethod dependencies-of ((action action) (comp component))
+  (append (action-dependencies action comp) (component-dependencies comp action)))
 
 ;; The following ensures that we only ever execute a particular (action . component)
 ;; combination once in the context of an execute call
@@ -1597,7 +1628,6 @@ and have a last compile time which is greater than the last compile time of COMP
   (when (supportedp component)
     (loop for (dep-action . dep-component) in (dependencies-of action component) :do
           (execute dep-component dep-action))))
-
 
 (defgeneric component-exists-p (component)
   (:documentation "Returns T if the component is present on the file system.")
@@ -1901,10 +1931,10 @@ Systems are unique on a name (tested using string-equal), version basis.
 
 (defun make-programmatic-class (superclasses)
   (make-instance 'standard-class
-                 ;; CLISP only supports symbols as class names
-                 :name #-clisp (mapcar 'class-name superclasses)
-                       #+clisp (intern (format nil "ANON-~{~A~^-~}" (mapcar 'class-name superclasses))
-                                       :keyword)
+                 ;; CLISP and CMUCL only supports symbols as class names
+                 :name #-(or clisp cmu) (mapcar 'class-name superclasses)
+                       #+(or clisp cmu) (intern (format nil "ANON-~{~A~^-~}" (mapcar 'class-name superclasses))
+                                                :keyword)
                  :direct-superclasses superclasses
                  :direct-slots ()))
 
@@ -1936,8 +1966,6 @@ module to be the parent of new-module with version VERSION."
   #'(lambda (sys) (list (name-of sys) (version-string (version-of sys)))))
 
 (defun register-system (system)
-  (when-let (current-system (find (funcall (system-key) system) *systems* :test 'equalp :key (system-key)))
-    (warn 'system-redefined :name (name-of system) :version (version-string system)))
   (setf *systems* (delete (funcall (system-key) system) *systems* :test #'equalp :key (system-key)))
   (pushnew system *systems* :test #'equalp :key (system-key))
   system)
@@ -1952,7 +1980,7 @@ module to be the parent of new-module with version VERSION."
 to their class defaults."
   (flet ((compute-initarg (spec)
            (destructuring-bind (initarg value initfn) spec
-             #+allegro
+             #+(or allegro cmu)
              (rotatef value initfn)
              (list initarg
                    #+lispworks
@@ -1986,7 +2014,9 @@ to their class defaults."
 (defgeneric create-component (parent name class &optional options)
   (:method (parent name class &optional options)
    (let* ((current (existing-component parent name (extract-option :version options))))
-
+     (when (and current (typep current 'system))
+       (warn 'system-redefined :name (name-of current) :version (version-string current)))
+     
      (when (and current (not (eql (class-of current) class)))
        (change-class current class))
      

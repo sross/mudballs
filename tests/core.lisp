@@ -308,16 +308,24 @@ a list created by extracting SLOT-NAMES from form."
   (with-test-systems ()
     (let ((sys (define-test-system :load-needs-compile ()
                  (:components ("module1" module) "file1"))))
+
       ;; ensure that loading file1 requires file1 to be compiled.
       (destructuring-bind ((action . file))
           (dependencies-of 'load-action (find-component sys "file1"))
         (assert-eq file (find-component sys "file1"))
-        (assert-true (typep action 'compile-action)))
+        (assert-eq 'compile-action (class-name (class-of action))))
+      
+      ;;and ensure this this applies to systems.
+      (destructuring-bind ((action . dep-sys))
+          (dependencies-of 'load-action sys)
+        (assert-eq sys dep-sys)
+        (assert-eq 'compile-action (class-name (class-of action))))
 
-      ;; but this does not apply to systems.
-      (assert-true (endp (dependencies-of 'load-action sys)))
-      ;; or modules
-      (assert-true (endp (dependencies-of 'load-action (find-component sys "module1")))))))
+      ;; and modules
+      (destructuring-bind ((action . dep-module))
+          (dependencies-of 'load-action (find-component sys "module1"))
+        (assert-eq (find-component sys "module1") dep-module)
+        (assert-eq 'compile-action (class-name (class-of action)))))))
 
 (define-test on-macro-use-list
   (with-test-systems (default-test-systems dependent-test-systems)
@@ -405,6 +413,7 @@ a list created by extracting SLOT-NAMES from form."
         (define-system :test-dev-mode2 ()())
         (assert-true (development-mode (find-component :test-dev-mode2)))
         (assert-equal #P"/tmp/" (pathname-of (find-component :test-dev-mode2))))
+      
       ;; This used to fail when reset instance would drop all the wrong columns
       (let ((*default-development-mode* t))
         (handler-bind ((system-redefined #'muffle-warning)) (define-system :test-dev-mode2 ()()))
@@ -986,10 +995,85 @@ a list created by extracting SLOT-NAMES from form."
                                      (component-pathname sys))
                     (component-pathname (find-component sys "foo")))
       (assert-equal #P"/tmp/bar" (component-pathname (find-component sys "bar"))))))
-        
-        
+
+
+(define-test dependency-chaining-test ()
+  (with-test-systems ()
+    (let ((sys (define-test-system :chain-test ()
+                 (:components "test")
+                 (:needs (compile-action :chain-test load-source-action)))))
+      (perform sys 'load-action)
+      (assert-true (time-of (find-component sys "test") 'compile-action))
+      (assert-true (time-of sys 'load-action))
+      (assert-true (time-of (find-component sys "test") 'load-source-action))))
+  (with-test-systems ()
+    (let ((sys (define-test-system :chain-test ()
+                 (:components "test")
+                 (:needs (compile-action :chain-test load-source-action)))))
+      (perform sys 'compile-action)
+      (assert-true (time-of (find-component sys "test") 'compile-action))
+      (assert-true (time-of (find-component sys "test") 'load-source-action)))))
+
+
+
+(defvar *execute-calls*)
+(defclass tracking-execute (testing-file) ())
+(defmethod execute :after ((comp tracking-execute) (action action))
+  (when (boundp '*execute-calls*)
+    (revpush (list (name-of comp) (class-name (class-of action)))
+          *execute-calls*)))
+
+(define-test for-dependency-test ()
+  "Ensure that dependencies on components with :for requirements remain applicable when the component is not applicable."
+  (with-test-systems ()
+    (let ((sys (define-test-system :for-dep-test ()
+                 (:serial t)
+                 (:default-component-class tracking-execute)
+                 (:components "foo" ("bar" (:for :mudballs-private-feature)) "baz")))))
+      
+    (let ((*execute-calls* nil)
+          (*features* (adjoin :mudballs-private-feature *features*)))
+      (execute :for-dep-test 'load-action)
+      (assert-equalp '(("foo" compile-action)
+                       ("foo" load-action)
+                       ("bar" compile-action)
+                       ("bar" load-action)
+                       ("baz" compile-action)
+                       ("baz" load-action))
+                     *execute-calls*)))
+
+  (with-test-systems ()
+    (let ((sys (define-test-system :for-dep-test ()
+                 (:serial t)
+                 (:needs (:some-other-system (:for :mudballs-private-feature)))
+                 (:default-component-class tracking-execute)
+                 (:components "foo" ("bar" (:for :mudballs-private-feature)) "baz"))))
+      (let ((*execute-calls* nil)
+            (*features* (remove :mudballs-private-feature *features*)))
+        (assert-false (dependencies-of 'compile-action sys))
+        (execute :for-dep-test 'load-action)
+        (assert-equalp '(("foo" compile-action)
+                         ("foo" load-action)
+                         ("baz" compile-action)
+                         ("baz" load-action))
+                       *execute-calls*)))))
+
+
+(define-test auto-compilation-dependencies ()
+  "Ensure that a compilation dependency is added automatically."
+  (let ((component (create-component nil :test 'lisp-source-file)))
+    (process-option component :needs '(:some-other-component (:for :test)))
+    (assert= 2 (length (needs-of component)))
+    (destructuring-bind (dep1 dep2) (needs-of component)
+      (with-slot-assertions (component consequent-action for match-action)
+        (assert-slot-values '(:some-other-component load-action :test compile-action)
+                            dep1)
+        (assert-slot-values '(:some-other-component nil :test action)
+                            dep2)))))
 
 
 ;; we don't run register-sysdefs here as it can slow down the tests
 (dflet ((register-sysdefs () (list 'registered)))
   (princ (run-tests)))
+
+
