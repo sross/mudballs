@@ -911,10 +911,11 @@ See check-supported-p, os, implementation, platform"
 
 (defmethod process-option ((comp component) (key (eql :needs)) &rest data)
 "  <strong>:needs</strong> <i>specification</i>*
-specification  => ([<i>match-action</i>] <i>dependency</i> [<i>action-to-take</i>])
+specification  => ([<imatch-action</i>] <i>dependency</i> [<i>action-to-take</i>] [(:for <i>feature</i>)])
 match-action   => class name
 dependency     => component name
 action-to-take => class name
+for            => a symbol or list suitable as an argument to featurep
 
 The :needs option specifies the dependencies that this component has on other components in the same module.
 
@@ -929,6 +930,9 @@ Both match-action and action-to-take can be left unspecified which results in a 
 for the form (<i>dependency-name</i>) and, for the sake of sanity, can be simplified to <i>dependency-name</i>.
 When left unspecified, match-action defaults to 'ACTION resulting in a match to all actions while action-to-take
 defaults to nil which will result in the current action being invoked being applied to the dependency.
+
+The for option provides a method of specifying per implementation dependencies without relying on #+ or #- reader macros.
+This feature is used to allow the creation of a portable `release-action` which can be reliably used across all platforms.
 
 It is not valid to specify action-to-take and leave match-action unspecified.
 ie. specifications of the form <tt>(\"macros\" (:needs (\"package\" load-action)))</tt> are NOT allowed.
@@ -966,10 +970,16 @@ Example 3.
 <tt>(:components \"package\"
             (\"my-generated-file\" generated-file)
             (\"macros\"            (:needs (source-file-action \"my-generated-file\" generate-action))))</tt>
-
 => This will cause a generate-action to be applied to the \"my-generated-file\" component before any
    source-file-action's are applied to the \"macros\" component.
-"   
+
+
+Example 4.
+<tt>(define-system :server ()
+       (:needs (:sb-posix (:for :sbcl))))</tt>
+=> This will create system with a dependency on :sb-posix. However, this dependency will only be processed
+   when the system is operated upon by SBCL.
+"
    
   (dolist (one-dep (mapcar #'make-dependency-spec data))
     (revpush (make-compilation-dependency one-dep) (needs-of comp))
