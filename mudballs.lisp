@@ -33,7 +33,7 @@
   (:export
    #:load #:compile #:search #:lisp-level #:clean #:test #:stat 
    ;; download related
-   #:install #:update #:update-system #:remove #:add #:upgrade #:document
+   #:install #:update #:update-system #:remove #:add #:upgrade #:document #:uninstall
    ;; from sysdef
    #:find-system #:find-component
 
@@ -110,7 +110,6 @@ NOTE: Versions with an asterisk next to them are installed."
         'string<))
 
 
-
 (defun resolve-name (name &key version)
   (apply 'find-system name (when version (list :version version))))
 
@@ -145,6 +144,7 @@ NOTE: Versions with an asterisk next to them are installed."
 
 (defaction-wrapper stat 'sysdef::stat-action :needs (:stat-action))
 (defaction-wrapper document (intern "DOCUMENT-ACTION" :sysdef.document-action) :needs (:document-action))
+(defaction-wrapper uninstall (intern "UNINSTALL-ACTION" :installer) :needs (:installer))
 
 
 
