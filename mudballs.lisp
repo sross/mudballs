@@ -107,54 +107,48 @@ NOTE: Versions with an asterisk next to them are installed."
         'string<))
 
 
+
 (defun resolve-name (name &key version)
   (apply 'find-system name (when version (list :version version))))
 
-(defun load (name &rest args &key version &allow-other-keys)
-  (declare (system-designator name))
-  "Loads the system designated by NAME into the lisp image.
-VERSION, if supplied, specifies the version of the system to load.
-If NAME is a string or symbol the system is looked up using FIND-SYSTEM."
-  (apply #'perform (resolve-name name :version version)
-         'load-action :allow-other-keys t  args))
+(defmacro defaction-wrapper (name action &key documentation needs default-args)
+  `(defgeneric ,name (name &rest args &key)
+     ,@(when documentation `((:documentation ,documentation)))
+     ,@(when needs
+         `((:method :before ((name t) &rest args &key)
+            (mapc 'load ',needs))))
+     (:method ((name t) &rest args &key version &allow-other-keys)
+      (apply ',name (resolve-name name :version version)
+             :allow-other-keys t args))
+     (:method ((name system) &rest args &key)
+      (apply 'perform name ,action :allow-other-keys t ,@default-args args))))
 
-(defun compile (name &rest args &key version)
-  (declare (system-designator name))
-  "Compiles the system designated by NAME, this does not necessarily mean
-that the system will have been loaded."
-  (apply #'perform (resolve-name name :version version) 'compile-action args))
 
-(defun clean (name &rest args &key version)
-  (declare (system-designator name))
-  "Removes all generated FASL files for the system designated by NAME."
-  (apply #'perform (resolve-name name :version version) 'sysdef::clean-action args))
+(defaction-wrapper load 'load-action :documentation
+                   "Loads the system designated by NAME into the lisp image.
+-VERSION, if supplied, specifies the version of the system to load.
+-If NAME is a string or symbol the system is looked up using FIND-SYSTEM.")
 
-(defun test (name &rest args &key file version)
-  (declare (system-designator name)
-           (ignore args))
-  "Performs a TEST-ACTION on the system designated by name."
-  (mb:load :test-action)
-  (perform (resolve-name name :version version)
-           (find-symbol "TEST-ACTION" 'sysdef)
-           :name file))
+(defaction-wrapper compile 'compile-action
+                   :documentation "Compiles the system designated by NAME, this does not necessarily mean
+-that the system will have been loaded.")
 
-(defun stat (name &key version)
-  (declare (system-designator name))
-  "Prints out some statistical information pertaining to the system designated by name."
-  (mb:load :stat-action)
-  (perform (resolve-name name :version version) 'sysdef::stat-action))
+(defaction-wrapper clean 'sysdef::clean-action
+                   :documentation "Removes all generated FASL files for the system designated by NAME.")
+
+(defaction-wrapper test (find-symbol "TEST-ACTION" 'sysdef)
+                   :needs (:test-action)
+                   :default-args (:name nil))
+
+(defaction-wrapper stat 'sysdef::stat-action :needs (:stat-action))
+(defaction-wrapper document (intern "DOCUMENT-ACTION" :sysdef.document-action) :needs (:document-action))
+
 
 
 (defun update-system ()
   "Updates the system bootstrapping mechanism. This should only be necessary when a bug is found in the boot.lisp file."
   (mb:load :installer)
   (funcall (find-symbol "SYSTEM-UPDATE" :installer)))
-  
-
-(defun document (name)
-  (mb:load :document-action)
-  (mb:load name)
-  (perform (resolve-name name) (intern "DOCUMENT-ACTION" :sysdef.document-action)))
 
 (defvar *lisp-level* :expert
   "one of :beginner, :intermediate or :expert")
