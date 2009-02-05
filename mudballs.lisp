@@ -35,7 +35,10 @@
    ;; download related
    #:install #:update #:update-system #:remove #:add #:upgrade #:document
    ;; from sysdef
-   #:find-system #:find-component)
+   #:find-system #:find-component
+
+   ;; support for single file systems
+   #:component #:*search-paths*)
   (:documentation "The :MUDBALLS package provides a number of utility functions for easier interaction with
 the :MB.SYSDEF package. It also provides some useful search and install functions."))
 
@@ -120,7 +123,7 @@ NOTE: Versions with an asterisk next to them are installed."
      (:method ((name t) &rest args &key version &allow-other-keys)
       (apply ',name (resolve-name name :version version)
              :allow-other-keys t args))
-     (:method ((name system) &rest args &key)
+     (:method ((name component) &rest args &key)
       (apply 'perform name ,action :allow-other-keys t ,@default-args args))))
 
 

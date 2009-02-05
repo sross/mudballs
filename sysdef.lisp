@@ -95,7 +95,11 @@
    #:RUN-SHELL-COMMAND #:implementation #:os #:platform
 
    ;; PROVIDER RELATED
-   #:with-provider #:URL-OF #:provider 
+   #:with-provider #:URL-OF #:provider
+
+   ;; SINGLE FILE SYSTEMS
+   #:*multiple-matching-files-behaviour* #:multiple-file-condition #:multiple-file-warning #:multiple-file-error
+   #:*search-paths* #:single-file-system
    )
 
   (:import-from  #.(package-name 
@@ -191,7 +195,7 @@ This can be set using the preference (in ~/.mudballs.prefs) :fasl-output-root")
 (defun builtin-system-p (name)
   (member (component-name name) *builtin-systems* :test #'name=))
 
-(defparameter *finders* '(default-system-finder)
+(defparameter *finders* '(find-single-file-system default-system-finder)
   "A list of functions with the arglist (name &rest args &key errorp version) which are used
 by FIND-SYSTEM and FIND-COMPONENT to lookup the system named by NAME.
 The function must either return the system with NAME or NIL indicating that it has failed
@@ -1481,9 +1485,10 @@ This adds various keywords to the system which are used when mb:search'ing throu
 and have a last compile time which is greater than the last compile time of COMPONENT"
   (let* ((my-time (last-compile-time component))
          (toplevel (toplevel-component-of component)))
-    (loop for (nil . system) in (dependencies-of action toplevel)
-          :thereis (and (on-macro-use-list toplevel system)
-                        (> (last-compile-time system) my-time)))))
+    (unless (eql toplevel component) ;; need this in case we create a component with no parent.
+      (loop for (nil . system) in (dependencies-of action toplevel)
+            :thereis (and (on-macro-use-list toplevel system)
+                          (> (last-compile-time system) my-time))))))
 
 
 (defmethod out-of-date-p ((file lisp-source-file) (action compile-action))
@@ -2021,9 +2026,9 @@ to their class defaults."
   (or (find name *previous-components* :key 'name-of :test 'name=)
       (%find-component parent name :errorp nil :version version)))
   
-(defgeneric create-component (parent name class &optional options)
-  (:method (parent name class &optional options)
-   (let* ((current (existing-component parent name (extract-option :version options))))
+(defgeneric create-component (parent name class &optional options &key existing-component)
+  (:method (parent name class &optional options &key existing-component)
+   (let* ((current (or existing-component (existing-component parent name (extract-option :version options)))))
      (when (and current (typep current 'system))
        (warn 'system-redefined :name (name-of current) :version (version-string current)))
      
@@ -2069,6 +2074,190 @@ to their class defaults."
                 (funcall (if copy #'%copy-object #'identity)
                          (slot-value from name)))
           (slot-makunbound to name)))))
+
+
+
+
+
+;; SINGLE FILE SYSTEMS
+(defun single-file-system-hash ()
+  (make-hash-table :test #'equal))
+
+(defvar *single-file-systems*  (single-file-system-hash)
+  "A hash table containing a mapping of name => component for single file systems.")
+
+(defun single-file-system (name)
+  (values (gethash (namestring name) *single-file-systems*)))
+
+(defun (setf single-file-system) (newval name)
+  (if newval
+      (setf (gethash (namestring name) *single-file-systems*) newval)
+      (remhash (namestring name) *single-file-systems*)))
+              
+
+(defparameter *search-paths* (list #+mswindows "/Program Files/Lisp/" #+linux "/usr/lib/lisp/" #+mac "/Library/Lisp/"
+                                   (merge-pathnames (make-pathname :directory '(:relative "lisp"))
+                                                    (user-homedir-pathname)))
+  "A list containing strings or pathnames which are used as root directories to find single file systems.
+New pathnames can be added to the list to add new search paths.")
+
+(declaim (type (member :warn :error nil) *multiple-matching-files-behaviour*))
+(defvar *multiple-matching-files-behaviour* :warn
+  "Specifies the behaviour to take when more than one file is found when looking for single file systems.
+The valid values are  :warn, :error or nil. When :warn a warning of type multiple-file-warning will be signalled.
+When :error an error of type multiple-file-error will be signalled, and when nil the first file found will be used.
+When conditions are signalled as restart named :USE will be made available to specify which file to use \(A list of
+files can be found in the FILES slot in the condition.")
+
+(define-condition multiple-file-condition (condition)
+  ((name :reader name-of :initarg :name :initform (error "name is required"))
+   (files :reader files-of :initarg :files :initform ()))
+  (:documentation "The root condition signalled when multiple matching files are found.")
+  (:report (lambda (c s)
+             (print-unreadable-object (c s :type t :identity t)
+               (format s "Multiple files were found (~{~A~^, ~}) matching ~S." (files-of c) (name-of c))))))
+
+(define-condition multiple-file-warning (warning multiple-file-condition) ()
+  (:documentation "Signalled to warn the user that multiple files are found and that the first one will be used."))
+
+(define-condition multiple-file-error (error multiple-file-condition) ()
+  (:documentation "The error to tell the user that multiple files are found and an appropriate one must be picked."))
+
+(defun read-new-value ()
+  (format *query-io* "Enter the file name to use: ")
+  (let ((val (read-line *query-io*)))
+    (list (if (stringp val) val (string val)))))
+        
+(defun all-single-files (name)
+  (loop :for load-path :in *search-paths*
+        :when (probe-file (proper-file-name load-path name))
+        :collect :it))
+
+
+(defmacro with-use-restart (&body body)
+  `(restart-case (progn ,@body)
+     (:specify (file)
+       :report "Specify the file to use."
+       :interactive read-new-value
+       (return-from find-single-file file))))
+
+(defun find-single-file (name)
+  (let ((matches (all-single-files name)))
+    (when (cdr matches)
+      (ecase *multiple-matching-files-behaviour*
+        ((nil) (first matches))
+        (:warn (with-use-restart (warn 'multiple-file-warning :files matches :name name)))
+        (:error (with-use-restart (error 'multiple-file-error :files matches :name name)))))
+    (first matches)))
+
+(defun proper-file-name (load-path name)
+  (merge-pathnames (expand-single-path name)
+                   load-path))
+
+(defun expand-single-path (name)
+  (let ((components (split name :ws '(#\;))))
+    (make-pathname :directory (cons :relative (butlast components))
+                   :name (car (last components))
+                   :type "lisp")))
+
+(defun single-file-specifier-p (name)
+  (and (stringp name) (starts-with name #\;)))
+
+(deftype single-file-specifier ()
+  `(and string (satisfies single-file-specifier-p)))
+
+(defun starts-with (string char)
+  (and (plusp (length string))
+       (eql char (char string 0))))
+
+(defun minus-first (string char)
+  (if (eql (char string 0) char)
+      (make-array (- (length string ) 1)
+                  :element-type (array-element-type string)
+                  :displaced-to string
+                  :displaced-index-offset 1)
+      string))
+
+(defclass single-file-system (lisp-source-file) ()
+  (:default-initargs :type nil)
+  (:documentation "Single-file-systems are the root class of all components which are looked up using the
+single file system mechanism.
+
+Single file systems are an attempt to provide a simple, yet useful mechanism for operating on files using
+the normal mudballs commands without having an external system definition defined for them.
+
+These components are specially named by preceding the filename with a semicolon \(#\;\). This indicates that
+a single file system is requested and mudballs will search on *search-paths* to locate the file.
+Files which are deeper in a directory heirarchy can be referenced using a directory-name;filename syntax
+and can be arbitrarily deeply nested.
+
+When a single file is requested \(eg. \";package\" \) and multiple files are matched  \(eg. with a *search-paths* of
+\(#P\"/lisp/\" #P\"/workfiles\") and a file named package.lisp in both directories\) a warning will be signalled and
+the file found will be used. This behaviour can be customized by changing the value of *multiple-matching-files-behaviour*.
+
+These single file systems can contain a component form (which is also exported by the mudballs package) to the top of the
+file to customize the component which will be created for the file. This form contains options, as per define-system,
+which are used to customize the component.
+
+eg.
+<tt>
+#+mudballs (mb:component (:needs :alexandria))
+</tt>
+
+This will specify that this file has a dependency on the system named alexandria. See define-system for more options.
+
+"))
+
+(defun find-single-file-system (system-name &key version)
+  (declare (ignore version))
+  (when (typep system-name 'single-file-specifier)
+    (let* ((name (minus-first system-name #\;))
+           (path (find-single-file name)))
+      (if path
+          (list (find-or-create-system path))
+          (remove-existing-system path)))))
+
+(defun remove-existing-system (name)
+  (setf (single-file-system name) nil))
+
+
+(defvar *max-forms-to-read* 5 "The number of forms we will read while looking for an mb:component form.")
+
+(defun extract-options (path) ;; this needs to pull out options from the file.
+  (with-open-file (stream path)
+    (rest (find-component-form stream))))
+
+(defun find-component-form (stream)
+  (loop :repeat *max-forms-to-read*
+        :for form = (read stream nil nil nil)
+        :when (eql (car form) 'component)
+        :return form))
+
+(defun find-or-create-system (path)
+  (handler-bind ((system-redefined #'muffle-warning))
+    (let* ((current (single-file-system path))
+           (new (create-component nil (namestring path)
+                                  'single-file-system
+                                  (extract-options path)
+                                  :existing-component current)))
+      (setf (single-file-system path) new))))
+
+(defmethod output-file ((component single-file-system))
+  (compile-file-pathname (component-pathname component)))
+
+(defmethod component-pathname ((component single-file-system))
+  (pathname (name-of component)))
+
+(defmacro component (&rest options)
+  "Specifies that the file is a component.  Options are the same as provided to define-system
+and are used to modify the component when it is created.
+It's worth noting that this function does no work, but rather the files are read to determine
+how to create a component for them."
+  (declare (ignore options))
+  nil)
+
+
+
 
 ;; Locating components
 ;; remember. If no version is requested then you must try to return an installed system.
@@ -2629,7 +2818,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 2 26)
+  (:version 0 3 0)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))
@@ -2649,4 +2838,6 @@ at the top of the file."))
 (perform :mudballs 'load-action)
 
 (setf *mudballs-loaded* t)
+(pushnew :mudballs *features*)
+
 ;; EOF

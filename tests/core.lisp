@@ -1072,6 +1072,70 @@ a list created by extracting SLOT-NAMES from form."
                             dep2)))))
 
 
+(defparameter *code*
+  (prin1-to-string '(mb:component (:needs :alexandria))))
+(define-test single-file-systems-tests ()
+  (let ((*single-file-systems* (single-file-system-hash)))
+    (assert-eq nil (component (:needs :foo)))
+
+    
+    ;; find-component-form tests
+    (with-open-stream (stream (make-string-input-stream *code*))
+      (assert-equal '(component (:needs :alexandria)) (find-component-form stream)))
+
+    (let ((code-with-forms (concatenate 'string "nil nil nil" *code*))
+          (*max-forms-to-read* 2))
+      (with-open-stream (stream (make-string-input-stream code-with-forms))
+        (assert-false (find-component-form stream))))
+
+
+    (assert-false (typep "core" 'single-file-specifier))
+    
+    (flet ((test-lookups (path name)
+             (let ((*search-paths* (list path)))
+               ;; check lookups
+               (let* ((files (find-single-file-system name))
+                      (comp (first files)))
+        
+                 (assert= 1 (length files))
+                 (assert-equal files (find-single-file-system name))
+
+                 (assert-eq (single-file-system (component-pathname comp))
+                            comp)))))
+      
+      (test-lookups (merge-pathnames (make-pathname :directory '(:relative "tests"))
+                                     (component-pathname (find-system :mudballs)))
+                    ";core")
+      (test-lookups (component-pathname (find-system :mudballs))
+                    ";tests;core"))))
+
+
+(define-test multiple-single-file-behaviour
+  (dflet ((all-single-files (name) (list #P"/tmp/foo.lisp" #P"/tmp/bar/foo.lisp"))
+          (extract-options (args) nil))
+
+    (let ((*multiple-matching-files-behaviour* :error))
+      (assert-error 'multiple-file-error (find-system ";foo"))
+      (block nil
+        (handler-bind ((multiple-file-error (lambda (c)
+                                              (assert-true (find-restart :specify c))
+                                              (return nil))))
+          (find-system ";foo"))))
+
+    (let ((*multiple-matching-files-behaviour* :warn))
+      (assert-error 'multiple-file-warning (find-system ";foo"))
+
+      (block nil
+        (handler-bind ((multiple-file-warning (lambda (c)
+                                                (assert-true (find-restart :specify c))
+                                                (return nil))))
+          (find-system ";foo"))))
+
+    (let ((*multiple-matching-files-behaviour* nil))
+      (assert-equal #P"/tmp/foo.lisp"
+                    (component-pathname (find-system ";foo"))))))
+
+
 ;; we don't run register-sysdefs here as it can slow down the tests
 (dflet ((register-sysdefs () (list 'registered)))
   (princ (run-tests)))
