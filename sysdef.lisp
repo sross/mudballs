@@ -2213,12 +2213,11 @@ This will specify that this file has a dependency on the system named alexandria
   (when (typep system-name 'single-file-specifier)
     (let* ((name (minus-first system-name #\;))
            (path (find-single-file name)))
-      (if path
-          (list (find-or-create-system path))
-          (remove-existing-system path)))))
+      ;; TODO: If we find a file and that file is subsequently deleted
+      ;; we will never delete the component that was created for it.
+      (when path
+        (list (find-or-create-system path))))))
 
-(defun remove-existing-system (name)
-  (setf (single-file-system name) nil))
 
 
 (defvar *max-forms-to-read* 5 "The number of forms we will read while looking for an mb:component form.")
