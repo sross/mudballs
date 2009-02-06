@@ -118,7 +118,8 @@ NOTE: Versions with an asterisk next to them are installed."
      ,@(when documentation `((:documentation ,documentation)))
      ,@(when needs
          `((:method :before ((name t) &rest args &key)
-            (mapc 'load ',needs))))
+            (dolist (need ',needs)
+              (apply 'load (if (listp need) need (list need)))))))
      (:method ((name t) &rest args &key version &allow-other-keys)
       (apply ',name (resolve-name name :version version)
              :allow-other-keys t args))
@@ -144,7 +145,7 @@ NOTE: Versions with an asterisk next to them are installed."
 
 (defaction-wrapper stat 'sysdef::stat-action :needs (:stat-action))
 (defaction-wrapper document (intern "DOCUMENT-ACTION" :sysdef.document-action) :needs (:document-action))
-(defaction-wrapper uninstall (intern "UNINSTALL-ACTION" :installer) :needs (:installer))
+(defaction-wrapper uninstall (intern "UNINSTALL-ACTION" :installer) :needs (:installer)) ;((:installer :version (>= 0 3))))
 
 
 
