@@ -661,6 +661,7 @@ a list created by extracting SLOT-NAMES from form."
 (defmethod input-write-date ((file test-config-file))
   (get-universal-time))
 
+
 (define-test config
   (with-test-systems ()
     (dflet ((config-file-exists-p (x) (declare (ignore x)) t))
@@ -675,6 +676,31 @@ a list created by extracting SLOT-NAMES from form."
             (*load-config* nil))
         (assert-prints "" (load-config sys))
         (assert-prints "" (load-config sys))))))
+
+(define-test portable-pathing ()
+  (test-function-calls (translate-portable-path equal)
+    ("foo.lisp" #.(merge-pathnames (make-pathname :directory '(:absolute)
+                                                  :defaults "foo.lisp")))
+    (";foo.lisp" #.(merge-pathnames (make-pathname :directory '(:absolute)
+                                                   :defaults "foo.lisp")))
+    (";.foo.lisp" #.(merge-pathnames (make-pathname :directory '(:absolute)
+                                                    :defaults ".foo.lisp")))
+    ("~;foo.lisp" #.(merge-pathnames (merge-pathnames "foo.lisp"
+                                                      (user-homedir-pathname)))))
+
+  (let ((sys (create-component nil :test 'testing-system '((:preferences "~;.mudballs.prefs")
+                                                           (:config-file "~;.mudballs")))))
+    (assert-equal (preference-file-of sys)
+                  (merge-pathnames ".mudballs.prefs"
+                                   (user-homedir-pathname)))
+    (assert-equal (component-pathname (create-config-component sys))
+                  (merge-pathnames ".mudballs"
+                                   (user-homedir-pathname))))
+  
+  (let ((sys (create-component nil :test 'testing-system '())))
+    (assert-equal (preference-file-of sys) nil)
+    (assert-equal (create-config-component sys) nil)))
+
 
 (define-test contents-of
   (with-test-systems ()

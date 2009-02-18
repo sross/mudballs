@@ -111,7 +111,8 @@
                         (error "Can't find suitable CLOS package.")))
    :class-precedence-list :generic-function-methods :method-specializers #-abcl :effective-slot-definition
    #-abcl :class-slots #-abcl :slot-definition-initargs :class-default-initargs
-   :method-qualifiers :class-direct-superclasses :class-direct-subclasses :finalize-inheritance)
+   :method-qualifiers :class-direct-superclasses :class-direct-subclasses :finalize-inheritance
+   :funcallable-standard-class)
   (:documentation "The :MB.SYSDEF package contains all the plumbing for defining your own systems.
 Typically you would not use this package directly but rather define your systems while `in-package` :sysdef-user."))
 
@@ -542,7 +543,10 @@ Config files are files which are loaded post system load to customize a systems 
 This can be controlled by the special variable *load-config*. The config file will only
 be loaded when necessary and utilizes the sysdef machinary to achieve this, this includes
 the creation of a config component \(the type of which can by customized using the :default-config-class
-option\) and is loaded by \(execute CONFIG-COMPONENT 'load-source-action\)")
+option\) and is loaded by \(execute CONFIG-COMPONENT 'load-source-action\)
+Config paths can be portably specified using #\; as directory seperators.
+The home directory specifier #\~ can be used as the first character of a config pathname which will be
+expanded to the (user-homedir-pathname), the results of #\~ appearing anywhere else in the config path is undefined.")
    (config-component :accessor config-component-of :initform nil)
    (preference-file :accessor preference-file-of :initform nil :initarg :preferences
                     :documentation "<strong>:preferences</strong> <i>pathname</i>
@@ -556,7 +560,12 @@ ie.  ~/.mudball.prefs can have the following value
 
 \(:fasl-output-root \"/tmp/\"\)
 
-and *fasl-output-root* is defined as (or (preference :fasl-output-root) ....))")
+and *fasl-output-root* is defined as (or (preference :fasl-output-root) ....))
+
+Preferences paths can be portably specified using #\; as directory seperators.
+eg. \"~;lisp;config.lisp\"
+The home directory specifier #\~ can be used as the first character of a preference file pathname which will be
+expanded to the (user-homedir-pathname), the results of #\~ appearing anywhere else in the namestring is undefined.")
    (default-config-class :accessor default-config-class-of :initform 'config-file
                          :initarg :default-config-class
                          :documentation "<strong>:default-config-class</strong> <i>class-name</i>
@@ -565,7 +574,13 @@ This options specifies the default type of the component created for a systems c
    (md5sum :reader md5sum-of :initarg :md5sum :initform nil
            :documentation "<strong>:md5sum</strong> <i>string</i>
 This is used in conjunction with with-provider and is used to specify the md5sum of the
-download file for this system and will be checked when a system is installed.")))
+download file for this system and will be checked when a system is installed.")
+   (home-page :reader home-page-of :initarg :home-page :initform :unknown
+              :documentation "<strong>:home-page</strong> <i>url</i>
+A url can be provided to systems to indicate the home page of the system.
+Since mudballs is an external collector of systems, rather than a hosting site, systems
+will generally have a home page which is not governed by mudballs. That site can be found
+by following this link.")))
 
 
 
@@ -764,7 +779,6 @@ them against component."))
    (error "The required method PROCESS-OPTION is not implemented by ~S for key ~S."
           system option-key )))
 
-
 (defgeneric execute (system action)
   (:method-combination standard-sysdef-method-combination)
   (:documentation "The private exection method, this will NOT create a new context when running action.")
@@ -789,10 +803,16 @@ them against component."))
   (:method ((system component) action-key &rest initargs &key &allow-other-keys)
    (perform system (apply 'coerce-to-action action-key initargs)))
 
-  (:method ((system component) (action action) &rest action-data &key &allow-other-keys)
+  (:method ((system module) (action action) &rest action-data &key &allow-other-keys)
    (declare (ignore action-data))
    (let ((*processed-actions* (acons nil nil nil)))
-     (execute system action))))
+     (execute system action)))
+  
+  (:method ((component component) (action action) &rest action-data &key &allow-other-keys)
+   (declare (ignore action-data))
+   (let ((*processed-actions* (acons nil nil nil)))
+     (process-parents-dependencies component action)
+     (execute component action))))
 
 
 ;;; READABLEP
@@ -1168,6 +1188,8 @@ This adds various keywords to the system which are used when mb:search'ing throu
 ;; VERSION PROCESSING
 (defgeneric version-string (obj)
   (:documentation "Returns the version or version of obj as a string of the form x.y.z")
+  (:method ((version string))
+   version)
   (:method ((version list))
    (format nil "~{~D~^.~}" version))
   (:method ((comp component))
@@ -1281,6 +1303,7 @@ This adds various keywords to the system which are used when mb:search'ing throu
 
 (defun exact-version-spec-p (spec)
   (or (and (consp spec)
+           (car spec)
            (every #'integerp spec))
       (string-version-spec-p spec)))
 
@@ -1296,7 +1319,9 @@ This adds various keywords to the system which are used when mb:search'ing throu
 
 (defun string-version-spec-p (spec)
   "A string version is an exact version spec in string form. ie. 1.2.3"
-  (and (stringp spec) (every #'(lambda (x) (or (digit-char-p x) (eql x #\.) (eql x #\*))) spec)))
+  (and (stringp spec)
+       (plusp (length spec))
+       (every #'(lambda (x) (or (digit-char-p x) (eql x #\.) (eql x #\*))) spec)))
 
 (defun wild-spec-p (spec)
   (and (consp spec)
@@ -1533,6 +1558,14 @@ and have a last compile time which is greater than the last compile time of COMP
             
 
 ;; CALCULATING DEPENDENCIES
+(defmethod process-parents-dependencies (component action)
+  "This method ensures that all of components parents dependencies are loaded.
+This is so we can load any component in a system without loading the entire system and
+still be sure that all of the components dependencies are met."
+  (when-let (parent (parent-of component))
+    (loop for (action . component) in (component-dependencies parent action) :do
+          (execute component action))))
+  
 (defgeneric dependency-applicablep (dependency action)
   (:method ((dependency dependency) (action action))
    (and (if (for-of dependency)
@@ -1566,7 +1599,7 @@ which have been removed due to not being applicable.
 This is to solve a bug (or non obvious behaviour) which occurs when having a serial system and
 one of the components has a :for specification which is not applicable. Under this case a break in
 the dependency chain is caused. eg
-\(define-system :test () (:components \"package\" (\"fixes\" (:for :sbcl)) \"features\")) asdf
+\(define-system :test () (:serial t) (:components \"package\" (\"fixes\" (:for :sbcl)) \"features\")) asdf
 This component, when compiled in implementations other than SBCL will not load package before
 compiling features as the FIXES components dependencies do not get processed."
   (loop :for dep :in (needs-of component)
@@ -1643,6 +1676,7 @@ compiling features as the FIXES components dependencies do not get processed."
   (when (supportedp component)
     (loop for (dep-action . dep-component) in (dependencies-of action component) :do
           (execute dep-component dep-action))))
+
 
 (defgeneric component-exists-p (component)
   (:documentation "Returns T if the component is present on the file system.")
@@ -2159,6 +2193,7 @@ files can be found in the FILES slot in the condition.")
     (make-pathname :directory (cons :relative (butlast components))
                    :name (car (last components))
                    :type "lisp")))
+
 
 (defun single-file-specifier-p (name)
   (and (stringp name) (starts-with name #\;)))
@@ -2696,17 +2731,40 @@ saves the component on the system and loads it using execute and load-source-act
   (:method ((system system))
    "The default method creates a config component using the default-config-class (see options in define-system)
 of the system and specifies the pathname of the component as the pathname specified by the :config-file option."
-   (let ((path (config-file-of system)))
-     (create-component system (pathname-name path)
-                       (default-config-class-of system)
-                       `((:pathname ,path))))))
+   (when-let (raw-path (config-file-of system))
+     (let ((path (translate-portable-path raw-path)))
+       (create-component system (pathname-name path)
+                         (default-config-class-of system)
+                         `((:pathname ,path)))))))
 
+
+(defun translate-portable-path (path)
+  "Converts pathnames of the form ;dir-name;name to a proper pathname.
+This will also expand ~'s to (user-homedir-pathname)"
+  (when (or (pathnamep path)
+            (and (not (find #\; path))
+                 (absolute-pathname-p path)))
+    (return-from translate-portable-path (merge-pathnames path)))
+  (let* ((elements (remove "" (split path :ws '(#\;)) :test 'string=))
+         (directories (butlast elements))
+         (filename (car (last elements))))
+    (merge-pathnames (make-pathname :directory (adjoin :absolute (replace-~ directories))
+                                    :defaults (pathname filename)))))
+
+(defun replace-~ (list)
+  (if (string= (car list) "~")
+      (append (pathname-directory (user-homedir-pathname)) (rest list))
+      list))
 
 
 ;; PREFERENCE FILES
 ;; Preferences files are files which contain symbol => value mappings which are made available
 ;; at system load time.
 (defclass preference-file (file) ())
+
+(defmethod preference-file-of :around ((system system))
+  (when-let (slot (slot-value system 'preference-file))
+    (translate-portable-path slot)))
 
 (defun preference-file-exists-p (sys)
   (and (preference-file-of sys) (probe-file (preference-file-of sys))))
@@ -2820,6 +2878,7 @@ at the top of the file."))
   (:version 0 3 0)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
+  (:preferences #.(merge-pathnames ".mudballs.prefs" (user-homedir-pathname)))
   (:components "sysdef" "mudballs"))
 
 ;; we define our boot system to allow us to do a system-update with minimal fuss
