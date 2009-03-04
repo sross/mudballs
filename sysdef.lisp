@@ -100,6 +100,9 @@
    ;; SINGLE FILE SYSTEMS
    #:*multiple-matching-files-behaviour* #:multiple-file-condition #:multiple-file-warning #:multiple-file-error
    #:*search-paths* #:single-file-system
+
+   ;; Requirements
+   #:create-requirement #:requirement
    )
 
   (:import-from  #.(package-name 
@@ -464,6 +467,7 @@ The result of invoking this function is made present on *features*"
   ((name :accessor name-of :initarg :name :initform :unspecific)
    (parent :accessor parent-of :initarg :parent :initform nil)
    (needs :accessor needs-of :initarg :needs :initform nil)
+   (requires :accessor requires-of :initform nil)
    (supports :accessor supports-of :initform nil :initarg :supports)
    (documentation :initarg :documentation :accessor doc :initform nil)
    (operation-times :initform (make-hash-table) :accessor operation-times)
@@ -537,7 +541,7 @@ Setting deprecated indicates that this system is depcrecated and a warning will 
 when loading this system. if NAME-OR-T is a system name then that name will be recommended in2
 the warning as a replacement.")
    (contact :accessor contact-of :initform "The Author" :initarg :contact)
-   (config :accessor config-file-of :initform nil :initarg :config-file
+   (config :initform nil :initarg :config-file
            :documentation "<strong>:config-file</strong> <i>pathname</i>
 Config files are files which are loaded post system load to customize a systems behaviour.
 This can be controlled by the special variable *load-config*. The config file will only
@@ -923,6 +927,69 @@ See check-supported-p, os, implementation, platform"
 ;; the dependency should be processed against component-name (which is resolved to an actual
 ;; component at dependency check time) using either action-to-take or, if it was not supplied,
 ;; the action for which the test is happening
+
+(deftype requires-spec ()
+  `(satisfies requires-spec-p))
+
+(defun requires-spec-p (thing)
+  (flet ((2-elt-list (thing)
+           (singlep (cdr thing)))
+         (second-elt-is-for-spec (thing)
+           (and (consp (second thing))
+                (eql (car (second thing))
+                     :for))))
+    (or (atom thing)
+        (singlep thing)
+        (and (2-elt-list thing)
+             (second-elt-is-for-spec thing)))))
+
+(defmethod process-option ((comp component) (key (eql :requires)) &rest data)
+  "REQUIRES is used for implementation specific loading of code. eg. sb-posix in sbcl and osi in acl.
+The syntax for specifying the option is
+SYNTAX = \(NAME [FOR-SPEC]\)
+FOR-SPEC = (:for FEATURE-TESTS)
+FEATURE-TESTS = A form suitable for #+ or #-
+
+If no FOR-SPEC is provided the form (NAME) can be simplified to NAME.
+
+eg.
+CL-FAD requires OSI for ACL and sb-executable for SBCL, the requires form for this would be
+\(:requires (:sb-executable (:for :sbcl)) (:sb-posix (:for :sbcl)) (:osi (:for :acl)))
+"
+  (setf (requires-of comp)
+        (loop for x :in data :collect (make-requires-dependency comp x))))
+
+(defclass requirement ()
+  ((on :accessor requirement-on :initarg :on)
+   (for :accessor for-of :initarg :for)))
+
+(defun make-requires-dependency (comp spec)
+  "Conversts a requires spec into a requirement instance"
+  (check-type spec requires-spec)
+  (destructuring-bind (on for) (normalize-requirement-spec spec)
+    (create-requirement comp on for)))
+
+(defmethod create-requirement ((component component) on for)
+  "Create an instance of requirement for COMPONENT using ON and FOR."
+  (make-instance 'requirement :on on :for for))
+
+(defun normalize-requirement-spec (spec)
+  (cond ((atom spec) (normalize-requirement-spec (list spec)))
+        ((singlep spec) (append spec '(nil)))
+        (t spec)))
+
+(defmethod component-requirements ((comp component))
+  (remove-if-not #'(lambda (req)
+                     (if (for-of req)
+                         (and (every 'featurep (cdr (for-of req))) t)
+                         t))
+                 (requires-of comp)))
+
+(defmethod load-requirement ((requirement requirement))
+  (require (requirement-on requirement)))
+
+
+;; Dependencies
 (defclass dependency ()
   ((match-action :reader match-action-of :initarg :match-action)
    (component :reader component-of :initarg :component)
@@ -1070,13 +1137,6 @@ dependencies using :uses-macros-from. This option is only used on modules and sy
     (push (dependency-name (make-dependency-list dep))
           (uses-macros-from module))))
 
-
-;; Requires is the same as :needs historically it was used to handle a common
-;; case where you want to depend on a system but also to require a
-;; 'Load depends on Compile' dependency. This as superseded by action-dependencies
-(defmethod process-option ((comp component) (key (eql :requires)) &rest data)
-  (warn ":REQUIRES is deprecated. Please use :needs.")
-  (apply 'process-option comp :needs data))
 
 
 ;; :COMPONENTS OPTION
@@ -1674,6 +1734,8 @@ compiling features as the FIXES components dependencies do not get processed."
 
 (defmethod execute :before ((component component) (action action))
   (when (supportedp component)
+    (dolist (requirement (component-requirements component))
+      (load-requirement requirement))
     (loop for (dep-action . dep-component) in (dependencies-of action component) :do
           (execute dep-component dep-action))))
 
@@ -1791,8 +1853,7 @@ compiling features as the FIXES components dependencies do not get processed."
 (defmethod execute ((component lisp-source-file) (action compile-action))
   (multiple-value-bind (output-file warnings-p failure-p)
       (compile-file (input-file component)
-                    :output-file (output-file component)
-                    #+lispworks :external-format #+lispworks :utf-8)
+                    :output-file (output-file component))
     (when warnings-p
       (case *compile-warns-behaviour*
         (:error (error 'compile-warned :file component))
@@ -1828,7 +1889,7 @@ compiling features as the FIXES components dependencies do not get processed."
 
 (defvar *do-not-document*
   '(:contact :author :maintainer :licence :license :contact
-    :documentation :name :component :parent :provider :requires))
+    :documentation :name :component :parent :provider))
 
 (defun symbol< (a b)
   (string< (string a) (string b)))
@@ -2711,6 +2772,10 @@ before find-system is called."
 (defmethod ensure-output-path-exists ((file config-file))
   t)
 
+(defmethod config-file-of ((sys system))
+  (when-let (value (slot-value sys 'config))
+    (translate-portable-path value)))
+
 (defun config-file-exists-p (sys)
   (and (config-file-of sys) (probe-file (config-file-of sys))))
 
@@ -2731,11 +2796,10 @@ saves the component on the system and loads it using execute and load-source-act
   (:method ((system system))
    "The default method creates a config component using the default-config-class (see options in define-system)
 of the system and specifies the pathname of the component as the pathname specified by the :config-file option."
-   (when-let (raw-path (config-file-of system))
-     (let ((path (translate-portable-path raw-path)))
-       (create-component system (pathname-name path)
-                         (default-config-class-of system)
-                         `((:pathname ,path)))))))
+   (when-let (path (config-file-of system))
+     (create-component system (pathname-name path)
+                       (default-config-class-of system)
+                       `((:pathname ,path))))))
 
 
 (defun translate-portable-path (path)

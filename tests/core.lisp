@@ -1162,6 +1162,31 @@ a list created by extracting SLOT-NAMES from form."
                     (component-pathname (find-system ";foo"))))))
 
 
+(defclass test-requirement (requirement) ())
+(defmethod create-requirement ((comp testing-system) on for)
+  (make-instance 'test-requirement :on on :for for))
+
+(defvar *required-values*)
+(defmethod load-requirement ((requirement test-requirement))
+  (push (requirement-on requirement) *required-values*))
+
+(define-test requires-tests ()
+  (let ((*required-values* nil))
+    (with-test-systems ()
+      (let ((sys (define-test-system :require-test ()
+                   (:requires :foo))))
+        (execute sys 'load-action)
+        ;; once for the load action and another for the compile action dependency
+        (assert-equal '(:foo :foo) *required-values*)
+        (assert-error 'type-error (make-requires-dependency sys '(:foo :bar :baz)))))
+
+    (test-function-calls (normalize-requirement-spec equal)
+      (:foo (:foo nil))
+      ((:foo) (:foo nil))
+      ((:foo (:for :sbcl)) (:foo (:for :sbcl))))))
+    
+
+
 ;; we don't run register-sysdefs here as it can slow down the tests
 (dflet ((register-sysdefs () (list 'registered)))
   (princ (run-tests)))
