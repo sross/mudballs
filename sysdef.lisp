@@ -181,7 +181,7 @@ System paths take the form *systems-path* /SYSTEM-NAME/VERSION/")
     "This is the root folder of all of the mudballs system definition files.")
   )
 
-(defparameter *saved-slots* '(operation-times components)
+(defparameter *saved-slots* '(operation-times components config-component)
   "Slots which are saved on system redefinition.")
 
 (defparameter *inherited-slots* '(if-needs-fails if-supports-fails default-component-class serial)
@@ -1476,7 +1476,6 @@ This adds various keywords to the system which are used when mb:search'ing throu
 
 ;; While this is remarkably similar to component-pathname we keep them in 2 different methods to
 ;; allow for seperate customization on file location and the output of FASL's
-
 (defgeneric output-file (component)
   (:method ((component component)) nil)
   (:method ((sys null)) (merge-pathnames (make-pathname :version :newest)
@@ -1495,7 +1494,10 @@ This adds various keywords to the system which are used when mb:search'ing throu
 
   (:method :around ((file file))
    (or (output-pathname-of file)
-       (compile-file-pathname (merge-pathnames (fasl-path file) (call-next-method file)))))
+       (call-next-method)))
+
+  (:method ((file lisp-source-file))
+   (compile-file-pathname (merge-pathnames (fasl-path file) (call-next-method file))))
   
   (:method ((file file)) ;;what about the rest of the components. version etc.
    (merge-pathnames (make-pathname :type (file-type file)
@@ -2768,6 +2770,14 @@ before find-system is called."
 
 
 ;; CONFIG FILES
+(defmethod process-option ((component component) (option (eql :config-file)) &rest option-data)
+  (let ((path (first option-data)))
+    ;; clear out the config component if path is not the same as the pathname of the component)
+    (when-let (component (config-component-of component))
+      (unless (equal (translate-portable-path path) (input-file component))
+        (setf (config-component-of component) nil)))
+    (call-next-method)))
+               
 (defclass config-file (lisp-source-file) ())
 (defmethod ensure-output-path-exists ((file config-file))
   t)
