@@ -463,8 +463,8 @@ a list created by extracting SLOT-NAMES from form."
                  (:components "foo" ("bar" (:output-pathname "/baz/bar.fas")))
                  (:output-pathname #P"/tmp/"))))
       (assert-equal (merge-pathnames (fasl-path (find-component sys "foo"))
-                                     (compile-file-pathname #P"/tmp/foo.lisp"))
-                    (output-file (find-component sys "foo")))
+                                     (compile-file-pathname (merge-pathnames #P"/tmp/foo.lisp")))
+                    (merge-pathnames(output-file (find-component sys "foo"))))
       (assert-equal "/baz/bar.fas" (output-file (find-component sys "bar"))))
 
     (let ((sys (define-test-system :output-test2 ()
@@ -481,14 +481,12 @@ a list created by extracting SLOT-NAMES from form."
                    (:components "foo" ("bar" (:output-pathname "/baz/bar.fas"))))))
 
         (assert-equal (merge-pathnames (fasl-path (find-component sys "foo"))
-                                       (make-pathname :version :newest :name "foo" :type (fasl-path-type)
-                                                      :directory '(:absolute "tmp" "for-test-system" "0.0.1")))
-                      (output-file (find-component sys "foo")))
+                                       (merge-pathnames (make-pathname :version :newest :name "foo" :type (fasl-path-type)
+                                                                       :directory '(:absolute "tmp" "for-test-system" "0.0.1"))))
+                      (merge-pathnames (output-file (find-component sys "foo"))))
         (assert-equal "/baz/bar.fas" (output-file (find-component sys "bar")))))))
 
 
-
-;(find-system :installer)
 (defclass ordering-file (testing-file)
   ((completed-actions :accessor completed-actions-of :initform ())))
 
@@ -605,15 +603,15 @@ a list created by extracting SLOT-NAMES from form."
           '("002" "003" "001" "004")))
 
 (define-test patch-tests
-             (let* ((sys (create-component nil 'test 'system '((:version 0 1 1))))
+  (let* ((sys (create-component nil 'test 'system '((:version 0 1 1))))
          (*system-being-patched* sys))
     (patch (0 1 2))
     (assert-equal '(0 1 1) (version-of sys))
     (assert-equal '(0 1 2) (patch-version-of sys))
     (assert-eql :mb.sysdef-patch-system (patch-name :mb.sysdef))
     (assert-equal (namestring (make-pathname :directory '(:relative "patches" "test" "0.1.1")))
-                  (enough-namestring (component-pathname (create-patch-module sys))
-                                     *root-pathname*)))
+                  (namestring (enough-namestring (component-pathname (create-patch-module sys))
+                                                 *root-pathname*))))
   (let ((module (make-instance 'ordered-patch-test)))
     (loop for (a b . rest) on (components-of module)
           :do (when (and a b)
@@ -686,16 +684,16 @@ a list created by extracting SLOT-NAMES from form."
     (";.foo.lisp" #.(merge-pathnames (make-pathname :directory '(:absolute)
                                                     :defaults ".foo.lisp")))
     ("~;foo.lisp" #.(merge-pathnames (merge-pathnames "foo.lisp"
-                                                      (user-homedir-pathname)))))
-
+                                                      (directory-namestring (user-homedir-pathname))))))
+  
   (let ((sys (create-component nil :test 'testing-system '((:preferences "~;.mudballs.prefs")
                                                            (:config-file "~;.mudballs")))))
     (assert-equal (preference-file-of sys)
-                  (merge-pathnames ".mudballs.prefs"
-                                   (user-homedir-pathname)))
+                  (merge-pathnames (merge-pathnames ".mudballs.prefs"
+                                                    (directory-namestring (user-homedir-pathname)))))
     (assert-equal (component-pathname (create-config-component sys))
-                  (merge-pathnames ".mudballs"
-                                   (user-homedir-pathname))))
+                  (merge-pathnames (merge-pathnames ".mudballs"
+                                                    (directory-namestring (user-homedir-pathname))))))
   
   (let ((sys (create-component nil :test 'testing-system '())))
     (assert-equal (preference-file-of sys) nil)
@@ -791,8 +789,8 @@ a list created by extracting SLOT-NAMES from form."
       (assert-equal '(:relative "dir1" "dir2")
                     (module-directory (find-component sys :foo)))
       (assert-equal (namestring (make-pathname :directory '(:relative "dir1" "dir2")))
-                    (enough-namestring (component-pathname (find-component sys :foo))
-                                       (component-pathname sys))))))
+                    (namestring (enough-namestring (component-pathname (find-component sys :foo))
+                                                   (component-pathname sys)))))))
 
 (define-test system-redefined-test
   (with-test-systems ()
@@ -1020,7 +1018,8 @@ a list created by extracting SLOT-NAMES from form."
       (assert-equal (merge-pathnames (make-pathname :directory '(:relative "foo") :name "bar" :type "lisp")
                                      (component-pathname sys))
                     (component-pathname (find-component sys "foo")))
-      (assert-equal #P"/tmp/bar" (component-pathname (find-component sys "bar"))))))
+      (assert-equal (make-pathname :directory '(:absolute "tmp") :name "bar")
+                    (component-pathname (find-component sys "bar"))))))
 
 
 (define-test dependency-chaining-test ()
