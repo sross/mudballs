@@ -28,13 +28,13 @@ Bindings are the same as in flet/labels"
   (mapcar 'first fn-bindings))
 
 (defun saved-names-for (fn-names)
-  (mapcar (lambda (name) (make-symbol (format nil "SAVED-FN-~A" name)) ) fn-names))
+  (mapcar (lambda (name) (make-symbol (format nil "SAVED-FN-~:@(~A~)" name)) ) fn-names))
 
 ) ;; eval-when
 
 ;;; Utils Macros and Functions
 (defmacro test-function-calls ((function test) &body body)
-  (let ((assertion-name (intern (format nil "ASSERT-~A" test) :tryil)))
+  (let ((assertion-name (intern (format nil "ASSERT-~:@(~A~)" test) :tryil)))
     `(progn ,@(loop for (arg result) in body
                     collect `(,assertion-name ',result (,function ',arg ))))))
 

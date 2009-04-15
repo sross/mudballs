@@ -716,7 +716,7 @@ by following this link.")))
   ((system :reader system-of :initarg :system)
    (by :reader deprecated-by :initarg :by))
   (:report (lambda (c s)
-             (format s "System ~A is deprecated~@[, Please use ~A instead~]."
+             (format s "System ~:@(~A~) is deprecated~@[, Please use ~:@(~A~) instead~]."
                      (system-of c) (deprecated-by c)))))
 
 (define-condition fasl-error (sysdef-error file-mixin) ())
@@ -1278,7 +1278,7 @@ This adds various keywords to the system which are used when mb:search'ing throu
                      #'identity specb)))
 
 (defun version-test (test )
-  (let ((sym (intern (format nil "VERSION~S" test) :sysdef)))
+  (let ((sym (intern (format nil "VERSION~:@(~S~)" test) :sysdef)))
     (if (fboundp sym)
         (symbol-function sym)
         (error "No such test ~S."  sym))))
@@ -2045,7 +2045,7 @@ Systems are unique on a name (tested using string-equal), version basis.
   (make-instance 'standard-class
                  ;; CLISP and CMUCL only supports symbols as class names
                  :name #-(or clisp cmu) (mapcar 'class-name superclasses)
-                       #+(or clisp cmu) (intern (format nil "ANON-~{~A~^-~}" (mapcar 'class-name superclasses))
+                       #+(or clisp cmu) (intern (format nil "ANON-~{~:@(~A~)~^-~}" (mapcar 'class-name superclasses))
                                                 :keyword)
                  :direct-superclasses superclasses
                  :direct-slots ()))
@@ -2742,7 +2742,7 @@ before find-system is called."
      (execute module 'load-action))))
 
 (defun patch-name (system)
-  (intern (format nil "~A-PATCH-SYSTEM" system) :keyword))
+  (intern (format nil "~:@(~A~)-PATCH-SYSTEM" system) :keyword))
 
 (defgeneric create-patch-module (system)
   (:method ((system system))
@@ -2949,7 +2949,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 3 1)
+  (:version 0 3 2)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:preferences #.(merge-pathnames ".mudballs.prefs" (user-homedir-pathname)))
