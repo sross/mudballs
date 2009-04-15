@@ -1869,7 +1869,7 @@ compiling features as the FIXES components dependencies do not get processed."
   component)
 
 ; Clean Action
-(defmethod execute ((component file) (action clean-action))
+(defmethod execute ((component source-file) (action clean-action))
   (when-let (output-file (component-output-exists-p component))
     (format *verbose-out* "~&DELETE ~A~%" output-file)
     (delete-file output-file)))
@@ -2949,7 +2949,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 3 0)
+  (:version 0 3 1)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:preferences #.(merge-pathnames ".mudballs.prefs" (user-homedir-pathname)))
