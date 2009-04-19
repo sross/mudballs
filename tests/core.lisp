@@ -1183,7 +1183,14 @@ a list created by extracting SLOT-NAMES from form."
       (:foo (:foo nil))
       ((:foo) (:foo nil))
       ((:foo (:for :sbcl)) (:foo (:for :sbcl))))))
-    
+
+(define-test use-macros-only-considers-loaded-systems ()
+             (with-test-systems ()
+    (let ((a (define-system :a ()))
+          (b (define-system :b () (:uses-macros-from :a))))
+      (assert-false (system-loaded-p :b))
+      (execute a 'load-action)
+      (assert-false (system-loaded-p :b)))))
 
 
 ;; we don't run register-sysdefs here as it can slow down the tests

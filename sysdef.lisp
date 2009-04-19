@@ -27,6 +27,9 @@
 ;;;; Mudballs System Definitions
 ;;;
 
+;;; POSSIBLE ABSTRACTIONS
+;; abstract out mapping over loaded systems. (used by ensure-dependencies-up-to-date)
+
 (declaim (optimize debug safety (speed 0)))
 (defpackage :mb.sysdef (:use :cl)
   (:nicknames :sysdef)
@@ -2492,9 +2495,11 @@ has been loaded into the the current Lisp image or nil.")
 (defgeneric ensure-dependencies-up-to-date (system)
   (:method ((system system))
    (when *mudballs-loaded*
-     (do-systems (sys)
-       (when (on-macro-use-list sys system)
-         (execute sys 'load-action))))))
+     (maphash #'(lambda (name sys)
+                  (declare (ignore name))
+                  (when (on-macro-use-list sys system)
+                    (execute sys 'load-action)))
+              *loaded-versions*))))
 
 (defmethod execute :before ((system system) (action source-file-action))
   (let ((loaded-system (system-loaded-p (name-of system))))
@@ -2949,7 +2954,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 3 2)
+  (:version 0 3 3)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:preferences #.(merge-pathnames ".mudballs.prefs" (user-homedir-pathname)))
