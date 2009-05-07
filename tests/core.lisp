@@ -1185,12 +1185,47 @@ a list created by extracting SLOT-NAMES from form."
       ((:foo (:for :sbcl)) (:foo (:for :sbcl))))))
 
 (define-test use-macros-only-considers-loaded-systems ()
-             (with-test-systems ()
-    (let ((a (define-system :a ()))
-          (b (define-system :b () (:uses-macros-from :a))))
+  (with-test-systems ()
+    (let ((a (define-test-system :a ()))
+          (b (define-test-system :b () (:uses-macros-from :a))))
       (assert-false (system-loaded-p :b))
       (execute a 'load-action)
       (assert-false (system-loaded-p :b)))))
+
+
+(defclass stomping-system (system) ()
+  (:documentation "A system class which modifies *readtable* and *package* at execution time"))
+
+(defmethod execute :after ((system stomping-system) (action action))
+  (setf *readtable* (copy-readtable))
+  (setf *package* (find-package :cl-user)))
+
+(define-test execute-bind-test ()
+  (with-test-systems ()
+   (let ((sys (define-test-system :stomp-test (stomping-system) ()))
+         (package *package*)
+         (readtable *readtable*))
+     (execute :stomp-test 'load-action)
+     (assert-eq package *package*)
+     (assert-eq readtable *readtable*))))
+
+
+(define-test template-tests ()
+  (with-test-systems ()
+    (let ((*templates* (create-template-holder)))
+      (define-system-template :template-test (:documentation "doc") (:keywords "a" "keyword"))
+      (let ((sys (define-test-system :template-test ())))
+        (assert-equal "doc" (documentation sys t))
+        (assert-equal '("a" "keyword") (keywords-of sys))))))
+
+
+;(define-test stub-system-test ()
+(with-test-systems ()
+  (let ((*templates* (create-template-holder)))
+    (define-system-template :stub-test (:documentation "doc") (:keywords "a" "keyword"))
+    (let ((sys (define-available-system :stub-test (:version 0 0 1))))
+              
+      (perform  sys 'load-action))))
 
 
 ;; we don't run register-sysdefs here as it can slow down the tests

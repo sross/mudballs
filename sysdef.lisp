@@ -62,7 +62,7 @@
    ;; COMPONENTS AND ACTIONS
    #:COMPONENT #:MODULE #:LAZY-MODULE #:PATCHABLE #:SYSTEM #:ACTION #:FILE-ACTION #:SOURCE-FILE-ACTION
    #:COMPILE-ACTION #:LOAD-ACTION #:LOAD-SOURCE-ACTION #:CLEAN-ACTION #:FILE #:STATIC-FILE #:SOURCE-FILE
-   #:LISP-SOURCE-FILE
+   #:LISP-SOURCE-FILE #:STUB-SYSTEM
 
    ;; CONDITIONS
    #:SYSDEF-CONDITION #:SYSDEF-ERROR #:SYSDEF-WARNING #:NO-SUCH-COMPONENT #:COMPONENT-NOT-SUPPORTED
@@ -71,7 +71,7 @@
    #:SYSTEM-NOT-INSTALLED #:MISSING-COMPONENT #:SYSTEM-ALREADY-LOADED
    
    ;; SYSTEM DEFINITION
-   #:register-sysdefs #:define-system #:undefine-system
+   #:register-sysdefs #:define-system #:undefine-system #:define-system-template #:define-available-system
 
    ;; WILDCARD MODULES
    #:WILDCARD-MODULE #:WILDCARD-PATHNAME-OF #:WILDCARD-SEARCHER
@@ -587,7 +587,8 @@ download file for this system and will be checked when a system is installed.")
 A url can be provided to systems to indicate the home page of the system.
 Since mudballs is an external collector of systems, rather than a hosting site, systems
 will generally have a home page which is not governed by mudballs. That site can be found
-by following this link.")))
+by following this link.")
+   (system-definition-component :accessor system-definition-component :initform nil)))
 
 
 
@@ -1719,7 +1720,9 @@ compiling features as the FIXES components dependencies do not get processed."
                  (let ((*processed-actions* (acons nil nil nil)))
                    (process-action)))))
     (loop
-     (restart-case (progn (process-with-bound-var)
+     (restart-case (progn (let ((*package* *package*)
+                                (*readtable* *readtable*))
+                            (process-with-bound-var))
                      (setf (time-of component action) (get-universal-time))
                      (return component))
        (retry () :report (lambda (s) (format s "Retry ~A on ~A." (name-of action) component)))
@@ -1969,6 +1972,70 @@ Systems are unique on a name (tested using string-equal), version basis.
       `(fn-define-system ',name ',superclasses nil ',options)))
 
 
+
+;; Templates and Stub systems
+;;
+;; At one point system definition files contained all the code to define a system, including
+;; supporting lisp code. When I created the website and system upload and creation part of
+;; the site, giving anonymous users (and in order to have good uptake anonymous users are a must)
+;; the ability to run random code whoever downloads a system definition file created a rather
+;; ugly security hole.
+;; So we reverted to Templates and stub systems.
+;; Templates are just that, a template which is used to fill in a system at definition time.
+;; Stub systems, created by define-available-version creates a system of type stub-system with
+;; some searchable information filled in. At system load time (before the perform method)
+;; stub systems get resolved to proper systems by loading the system definition file which is to
+;; reside in the systems root. This system definition file can contain all the code necessary
+;; to properly define the system.
+(defun create-template-holder ()
+  (make-hash-table :test #'equalp))
+
+(defvar *templates* (create-template-holder))
+
+(defun get-template (name)
+  (gethash name *templates*))
+
+(defun (setf get-template) (new-value name)
+  (if new-value
+      (setf (gethash name *templates*) new-value)
+      (remhash name *templates*)))
+
+(defmacro define-system-template (name &body options)
+  `(setf (get-template ',name) ',options))
+
+
+(defclass stub-system (system) ())
+
+(defclass system-definition-file (lisp-source-file) ())
+
+(defmacro define-available-system (name &body options)
+  `(define-system ,name (stub-system) ,@options))
+
+;; This magic works thanks to the fact that create-component uses change-class to
+;; change to stub system to a proper system when the new system definition is loaded
+;; at which point the normal perform method kicks in and passes the system to execute
+(defmethod perform :before ((system stub-system) (action action) &rest action-data &key &allow-other-keys)
+  (load-system-definition system))
+
+(defmethod execute :before ((system system) (action action))
+  (load-system-definition system))
+
+(defmethod load-system-definition ((system system))
+  (when-let (sdc (system-definition-component system))
+    (execute sdc 'load-action)))
+  
+(defmethod load-system-definition ((system stub-system))
+  (let ((sdc (or (system-definition-component system)
+                 (create-component system :system-definition 'system-definition-file
+                                   `((:pathname ,(system-definition-pathname system)))))))
+    (setf (system-definition-component system)
+          (execute sdc 'load-action))))
+
+(defgeneric system-definition-pathname (system)
+  (:method ((system system))
+   (merge-pathnames (make-pathname :name (component-name (name-of system)) :type "mbd")
+                    (component-pathname system))))
+
 (eval-when (:compile-toplevel :load-toplevel :execute)
 
 (defun multiple-version-definitions-p (options)
@@ -2129,7 +2196,7 @@ to their class defaults."
 (defgeneric create-component (parent name class &optional options &key existing-component)
   (:method (parent name class &optional options &key existing-component)
    (let* ((current (or existing-component (existing-component parent name (extract-option :version options)))))
-     (when (and current (typep current 'system))
+     (when (and current (typep current 'system) (not (typep current 'stub-system)))
        (warn 'system-redefined :name (name-of current) :version (version-string current)))
      
      (when (and current (not (eql (class-of current) class)))
@@ -2144,9 +2211,17 @@ to their class defaults."
          (setf (parent-of component) parent))
 
        (process-option component :name name)
+       
+       (when (not parent)
+         (fill-from-template component))
+       
        (process-options component options)
        
        component))))
+
+(defmethod fill-from-template ((object component))
+  (loop for (option . values) in (get-template (name-of object)) :do
+        (apply 'process-option object option values)))
      
 
 ;; This is only to be used by copy-slots and is not to be extended.
@@ -2954,7 +3029,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 3 3)
+  (:version 0 3 6)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:preferences #.(merge-pathnames ".mudballs.prefs" (user-homedir-pathname)))

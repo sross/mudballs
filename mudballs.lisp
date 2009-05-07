@@ -33,7 +33,7 @@
   (:export
    #:load #:compile #:search #:lisp-level #:clean #:test #:stat 
    ;; download related
-   #:install #:update #:update-system #:remove #:add #:upgrade #:document #:uninstall
+   #:install #:update #:update-system #:self-update #:remove #:add #:upgrade #:document #:uninstall
    ;; from sysdef
    #:find-system #:find-component
 
@@ -145,14 +145,17 @@ NOTE: Versions with an asterisk next to them are installed."
 
 (defaction-wrapper stat 'sysdef::stat-action :needs (:stat-action))
 (defaction-wrapper document (intern "DOCUMENT-ACTION" :sysdef.document-action) :needs (:document-action))
-(defaction-wrapper uninstall (intern "UNINSTALL-ACTION" :installer) :needs (:installer)) ;((:installer :version (>= 0 3))))
+(defaction-wrapper uninstall (intern "UNINSTALL-ACTION" :installer) :needs ((:installer :version (>= 0 2 4))))
 
 
+(defun self-update ()
+  "Updates the system bootstrapping mechanism. This should only be necessary when a bug is found in the boot.lisp file."
+  (mb:load :installer :version '(>= 0 2 4))
+  (funcall (find-symbol "SELF-UPDATE" :installer)))
 
 (defun update-system ()
-  "Updates the system bootstrapping mechanism. This should only be necessary when a bug is found in the boot.lisp file."
-  (mb:load :installer)
-  (funcall (find-symbol "SYSTEM-UPDATE" :installer)))
+  "An alias for self-update."
+  (self-update))
 
 (defvar *lisp-level* :expert
   "one of :beginner, :intermediate or :expert")
