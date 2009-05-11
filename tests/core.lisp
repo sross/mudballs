@@ -1218,14 +1218,21 @@ a list created by extracting SLOT-NAMES from form."
         (assert-equal "doc" (documentation sys t))
         (assert-equal '("a" "keyword") (keywords-of sys))))))
 
+(defclass stub-testing-system (testing-system) ())
 
-;(define-test stub-system-test ()
-(with-test-systems ()
-  (let ((*templates* (create-template-holder)))
-    (define-system-template :stub-test (:documentation "doc") (:keywords "a" "keyword"))
-    (let ((sys (define-available-system :stub-test (:version 0 0 1))))
-              
-      (perform  sys 'load-action))))
+(defmethod load-system-definition ((sys stub-testing-system))
+  (define-system :stub-test (testing-system)
+    (:version 0 0 1)
+    (:components "foo")))
+
+(define-test stub-system-test ()
+  (with-test-systems ()
+    (let ((*templates* (create-template-holder)))
+      (define-system-template :stub-test (:documentation "doc") (:keywords "a" "keyword"))
+      (let ((sys (define-available-system :stub-test (stub-testing-system) (:version 0 0 1))))
+        (setf (pathname-of sys) (merge-pathnames (make-pathname :directory '(:relative "stub-test"))
+                                                 *load-pathname*))
+        (perform  sys 'load-action)))))
 
 
 ;; we don't run register-sysdefs here as it can slow down the tests

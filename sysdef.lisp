@@ -524,7 +524,11 @@ This specifies the default class for components of this system. The default is L
 (defclass PATCHABLE ()
   ((patch-module :accessor patch-module-of :initform ())))
 
-(defclass SYSTEM (module patchable)
+(defclass RELEASABLE ()
+  ((release-date :accessor release-date :initform nil :initarg :release-date)
+   (released-by :accessor released-by :initform nil :initarg :released-by)))
+
+(defclass SYSTEM (module patchable releasable)
   ((maintainer :accessor maintainer-of :initform nil :initarg :maintainer)
    (author :accessor author-of :initform "Unknown" :initarg :author)
    (license :accessor license-of :accessor licence-of :initform "Unknown"
@@ -2008,8 +2012,8 @@ Systems are unique on a name (tested using string-equal), version basis.
 
 (defclass system-definition-file (lisp-source-file) ())
 
-(defmacro define-available-system (name &body options)
-  `(define-system ,name (stub-system) ,@options))
+(defmacro define-available-system (name (&rest classes) &body options)
+  `(define-system ,name (,@classes stub-system) ,@options))
 
 ;; This magic works thanks to the fact that create-component uses change-class to
 ;; change to stub system to a proper system when the new system definition is loaded
@@ -3029,7 +3033,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 3 6)
+  (:version 0 3 7)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:preferences #.(merge-pathnames ".mudballs.prefs" (user-homedir-pathname)))
