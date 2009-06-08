@@ -1566,9 +1566,11 @@ This adds various keywords to the system which are used when mb:search'ing throu
 ; Compile Action
 (defgeneric last-compile-time (component)
   (:method ((system module))
-   (or (loop :for file :in  (all-files system :type 'source-file)
-             :maximize (last-compile-time file))
-       0))
+   (let ((all-files  (all-files system :type 'source-file)))
+     (if all-files
+         (loop :for file :in  all-files
+               :maximize (last-compile-time file))
+         0)))
   (:method ((component component))
    (safe-write-date component)))
 
@@ -3035,7 +3037,7 @@ at the top of the file."))
   (:author "Sean Ross")
   (:supports (:implementation :lispworks :sbcl :cmucl :clisp :openmcl :scl :allegrocl))
   (:contact "sross@common-lisp.net")
-  (:version 0 3 8)
+  (:version 0 3 9)
   (:pathname #.(directory-namestring (or *compile-file-truename* "")))
   (:config-file #.(merge-pathnames ".mudballs" (user-homedir-pathname)))
   (:preferences #.(merge-pathnames ".mudballs.prefs" (user-homedir-pathname)))
